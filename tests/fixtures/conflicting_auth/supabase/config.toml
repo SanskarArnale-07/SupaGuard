@@ -1,0 +1,14 @@
+project_id = "test-conflicting-auth"
+
+[auth]
+enabled = true
+
+[auth.external.apple]
+enabled = true
+client_id = ""
+secret = ""
+
+[auth.external.github]
+enabled = true
+client_id = "   "
+# secret is completely missing

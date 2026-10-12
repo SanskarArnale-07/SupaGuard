@@ -1,0 +1,23 @@
+project_id = "test-project-env-vars"
+
+[auth]
+site_url = "http://127.0.0.1:3000"
+
+[auth.email.smtp]
+host = "smtp.sendgrid.net"
+port = 587
+user = "apikey"
+pass = "env(SENDGRID_API_KEY)"
+admin_email = "admin@example.com"
+
+[auth.external.github]
+enabled = true
+client_id = "env(GITHUB_CLIENT_ID)"
+secret = "env(GITHUB_CLIENT_SECRET)"
+
+[studio]
+enabled = true
+openai_api_key = "env(OPENAI_API_KEY)"
+
+[experimental]
+s3_secret_key = "env(AWS_SECRET_ACCESS_KEY)"

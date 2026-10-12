@@ -1,0 +1,11 @@
+project_id = "test-project-unknown"
+custom_random_flag = true
+unexpected_metadata = { author = "dev", team = "backend" }
+
+[auth]
+site_url = "http://localhost:3000"
+future_unknown_option = 999
+experimental_flag_v99 = "some_value"
+
+[database_unknown_section]
+magic_setting = "enabled"

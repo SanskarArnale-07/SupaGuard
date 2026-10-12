@@ -1,0 +1,6 @@
+project_id = "broken-toml"
+
+[api
+enabled = true
+port = "unclosed string
+schemas = [1, 2,

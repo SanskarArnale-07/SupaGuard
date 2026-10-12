@@ -1,0 +1,37 @@
+project_id = "test-project-weakened"
+
+[api]
+enabled = true
+schemas = ["public", "auth", "vault"]
+
+[db.settings]
+session_replication_role = "replica"
+
+[auth]
+enabled = true
+additional_redirect_urls = [
+  "https://*",
+  "http://insecure-remote.com/callback"
+]
+jwt_expiry = 604800
+enable_refresh_token_rotation = false
+
+[auth.email]
+double_confirm_changes = false
+secure_password_change = false
+
+[auth.sms.test_otp]
+"15551234567" = "999999"
+
+[auth.external.google]
+enabled = true
+client_id = "env(GOOGLE_CLIENT_ID)"
+secret = "env(GOOGLE_SECRET)"
+skip_nonce_check = true
+
+[functions.process_payment]
+enabled = true
+verify_jwt = false
+
+[storage.buckets.public_assets]
+public = true

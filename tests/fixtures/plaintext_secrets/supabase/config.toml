@@ -1,0 +1,16 @@
+project_id = "test-plaintext-secrets"
+
+[auth.external.github]
+enabled = true
+client_id = "gh-client-12345"
+secret = "ghp_super_secret_github_token_12345"
+
+[studio]
+enabled = true
+openai_api_key = "sk-proj-live-api-key-do-not-leak"
+
+[auth.email.smtp]
+pass = "smtp_super_secret_password_999"
+
+[experimental]
+s3_secret_key = "aws_s3_secret_access_key_999"

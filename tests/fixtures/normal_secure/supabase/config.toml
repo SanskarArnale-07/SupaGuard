@@ -1,0 +1,49 @@
+project_id = "test-project-normal"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[db.settings]
+session_replication_role = "origin"
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["https://localhost:3000", "https://app.example.com/callback"]
+jwt_expiry = 3600
+enable_signup = true
+enable_anonymous_sign_ins = false
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = true
+secure_password_change = true
+
+[auth.external.github]
+enabled = true
+client_id = "env(GITHUB_CLIENT_ID)"
+secret = "env(GITHUB_SECRET)"
+
+[functions.stripe_webhook]
+enabled = true
+verify_jwt = true
+
+[storage]
+enabled = true
+
+[storage.buckets.user_avatars]
+public = false
+file_size_limit = "5MB"
+allowed_mime_types = ["image/png", "image/jpeg"]

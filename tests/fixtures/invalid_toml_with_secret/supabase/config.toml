@@ -1,0 +1,4 @@
+project_id = "test-invalid-toml-secret"
+
+[auth.external.github]
+secret = "ghp_leaked_secret_token_12345" invalid_trailing_syntax
