@@ -1,5 +1,5 @@
 {
-  "name": "supaguard",
+  "name": "supaguard-cli",
   "version": "0.1.0",
   "description": "Open-source security preflight CLI for Supabase projects",
   "license": "MIT",
