@@ -24,15 +24,28 @@ function formatFinding(finding: Finding, index: number, total: number): string {
   const path = pc.cyan(finding.path);
   const observed = pc.white(pc.bold(finding.observedValue));
 
+  const pathLabel = finding.category === 'migrations' ? 'Migration Path:' : 'Config Path:   ';
+
   const lines = [
     `${pc.dim(`[${index}/${total}]`)} ${badge} ${title} ${id}`,
-    `   ${pc.dim('Config Path:')}      ${path}`,
-    `   ${pc.dim('Observed Value:')}   ${observed}`,
-    `   ${pc.dim('Category:')}         ${finding.category}`,
-    `   ${pc.dim('Rationale:')}        ${finding.rationale}`,
-    `   ${pc.dim('Policy Assumption:')} ${pc.italic(finding.policyAssumption)}`,
-    `   ${pc.green('➜ Remediation:')}    ${finding.remediation}`,
+    `   ${pc.dim(pathLabel)}   ${path}`,
   ];
+
+  if (finding.schema && finding.table) {
+    lines.push(`   ${pc.dim('Target Table:')}   ${pc.magenta(`${finding.schema}.${finding.table}`)}`);
+  }
+
+  if (finding.policyName) {
+    lines.push(`   ${pc.dim('Policy Name:')}    ${pc.yellow(`"${finding.policyName}"`)}`);
+  }
+
+  lines.push(
+    `   ${pc.dim('Observed Value:')} ${observed}`,
+    `   ${pc.dim('Category:')}       ${finding.category}`,
+    `   ${pc.dim('Rationale:')}      ${finding.rationale}`,
+    `   ${pc.dim('Policy Assumption:')} ${pc.italic(finding.policyAssumption)}`,
+    `   ${pc.green('➜ Remediation:')}    ${finding.remediation}`
+  );
 
   return lines.join('\n');
 }
@@ -56,7 +69,7 @@ export function formatTextReport(result: AnalysisResult): string {
 
   let body = '';
   if (findings.length === 0) {
-    body = `\n${pc.green(pc.bold('✔ No security issues detected in supabase/config.toml!'))}\n`;
+    body = `\n${pc.green(pc.bold('✔ No security issues detected in project configuration or migrations!'))}\n`;
   } else {
     body = '\n' + findings.map((f, i) => formatFinding(f, i + 1, findings.length)).join('\n\n') + '\n';
   }

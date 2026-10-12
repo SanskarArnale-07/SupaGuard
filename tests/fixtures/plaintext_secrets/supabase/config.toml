@@ -3,14 +3,15 @@ project_id = "test-plaintext-secrets"
 [auth.external.github]
 enabled = true
 client_id = "gh-client-12345"
-secret = "ghp_super_secret_github_token_12345"
+secret = "FAKE_TEST_SECRET_DO_NOT_USE_GITHUB"
 
 [studio]
 enabled = true
-openai_api_key = "sk-proj-live-api-key-do-not-leak"
+openai_api_key = "FAKE_TEST_SECRET_DO_NOT_USE_OPENAI"
 
 [auth.email.smtp]
-pass = "smtp_super_secret_password_999"
+pass = "FAKE_TEST_SECRET_DO_NOT_USE_SMTP"
 
 [experimental]
-s3_secret_key = "aws_s3_secret_access_key_999"
+s3_secret_key = "FAKE_TEST_SECRET_DO_NOT_USE_S3"
+

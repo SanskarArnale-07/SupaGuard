@@ -2,33 +2,37 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18.0.0-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-70%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-98%20passed-brightgreen.svg)]()
 
 > **SupaGuard** is a local security preflight CLI for Supabase projects.
-> It inspects `supabase/config.toml` prior to staging or production deployments to detect security-sensitive settings, exposed secrets, unencrypted protocols, and overly permissive configurations.
+> It inspects `supabase/config.toml` and SQL migration files (`supabase/migrations/*.sql`) prior to deployment to detect security-sensitive configurations, missing Row Level Security (RLS), exposed secrets, and overly permissive database access policies.
 
 ---
 
 ## What SupaGuard Does
 
-- **Static TOML Configuration Analysis**: Parses `supabase/config.toml` using a strict, spec-compliant TOML 1.0 parser (`smol-toml`).
-- **13 Built-in Security Rules**: Evaluates configuration settings across Authentication, API schemas, Database, Edge Functions, Storage buckets, and Secrets.
-- **Strict Distinction Between Explicit and Default Settings**: Distinguishes explicitly configured settings from unconfigured Supabase CLI defaults. Unconfigured optional settings do not trigger false positive findings.
+- **Static Configuration Analysis**: Parses `supabase/config.toml` using a strict, spec-compliant TOML 1.0 parser (`smol-toml`).
+- **SQL Migration Security Scanning**: Discovers and evaluates `supabase/migrations/*.sql` in deterministic order, building the cumulative final database state across your migration history.
+- **Spec-Compliant PostgreSQL Parsing**: Uses the official PostgreSQL parser compiled to WebAssembly (`pgsql-parser`) to parse complex DDL statements, comments, quoted identifiers, and multi-statement files.
+- **15 Built-in Security Rules**:
+  - 13 configuration security rules across Auth, Database, API exposure, Edge Functions, Storage buckets, and Secrets.
+  - 2 database migration rules tracking missing Row Level Security and dangerous or unrestricted RLS policies.
+- **State-Aware History Tracking**: Correctly accounts for tables created, altered, or dropped in later migrations, as well as policies modified or removed across the migration history.
+- **API Schema Correlation**: Cross-references table definitions against PostgREST API-exposed schemas (`api.schemas`) so internal or unexposed schemas do not generate false positives.
 - **Comprehensive Secret Redaction**: Masks sensitive credentials (`[REDACTED_SECRET]`) in terminal output, JSON reports, runtime error messages, and syntax error snippets.
-- **Environment Reference Recognition**: Treats `env(VARIABLE_NAME)` references as secure parameterizations without attempting to read `.env` files or execute network requests.
+- **Environment Reference Recognition**: Treats `env(VARIABLE_NAME)` references as secure parameterizations without reading `.env` files or making network requests.
 - **Predictable Exit Codes**: Returns deterministic exit codes (`0`, `1`, `2`) designed for CI/CD pipelines and pre-commit hooks.
-- **Standard and Strict Evaluation Modes**: Allows distinguishing between blocking findings (`CRITICAL` and `HIGH`) and non-blocking advisories (`MEDIUM`, `LOW`, and `INFO`).
-- **Strictly Read-Only and Safe**: Never mutates or formats configuration files, makes zero network connections, and collects zero telemetry.
+- **Strictly Read-Only and Safe**: Never mutates or formats configuration or migration files, never connects to a database, and collects zero telemetry.
 
 ---
 
 ## What SupaGuard Does Not Do
 
-- **Does NOT Scan SQL Migrations**: SupaGuard Phase 1 only inspects `supabase/config.toml`. It does not analyze SQL migration files or schema definitions (reserved for future phases).
-- **Does NOT Connect to Live Supabase Projects**: SupaGuard is entirely local. It does not contact remote Supabase APIs, project management endpoints, or cloud dashboards.
+- **Does NOT Execute SQL Against a Database**: SupaGuard is strictly a static analyzer. It never connects to local or remote PostgreSQL instances, never executes migrations, and does not require database credentials.
+- **Does NOT Connect to Live Supabase Projects**: SupaGuard is local-only. It does not contact remote Supabase APIs, project management endpoints, or cloud dashboards.
 - **Does NOT Validate Secret Values**: SupaGuard verifies that secrets use `env(...)` references rather than committed plaintext. It deliberately does not inspect local `.env` files or test whether credentials are valid.
-- **Does NOT Guarantee Total Security**: Passing all 13 preflight checks does not guarantee immunity from application vulnerabilities, flawed Row Level Security (RLS) policies, or runtime infrastructure misconfigurations.
-- **Does NOT Modify Files**: SupaGuard does not auto-fix or rewrite configuration files.
+- **Does NOT Guarantee Flawless Business Logic**: Enabling Row Level Security ensures that row-level checks are enforced; it does not replace application integration testing or verify whether your specific business rules match user expectations.
+- **Does NOT Modify Files**: SupaGuard does not auto-fix or rewrite configuration or SQL files.
 
 ---
 
@@ -38,8 +42,9 @@
 - **Node.js**: `>= 18.0.0`
 
 ### Runtime Dependencies
-SupaGuard relies on a minimal set of four production dependencies:
-- [`commander`](https://www.npmjs.com/package/commander) (`^12.1.0`) — CLI option parsing, help text, and subcommand routing.
+SupaGuard relies on five production dependencies:
+- [`commander`](https://www.npmjs.com/package/commander) (`^12.1.0`) — CLI option parsing, help formatting, and subcommand routing.
+- [`pgsql-parser`](https://www.npmjs.com/package/pgsql-parser) (`^18.2.10`) — PostgreSQL 18 query and DDL parser compiled to WebAssembly for AST analysis of migrations.
 - [`smol-toml`](https://www.npmjs.com/package/smol-toml) (`^1.3.1`) — Spec-compliant TOML 1.0 parser with line and column tracking.
 - [`picocolors`](https://www.npmjs.com/package/picocolors) (`^1.1.1`) — Lightweight ANSI terminal styling.
 - [`zod`](https://www.npmjs.com/package/zod) (`^3.23.8`) — Configuration validation and schema typing.
@@ -47,7 +52,7 @@ SupaGuard relies on a minimal set of four production dependencies:
 ### Development Dependencies
 - [`typescript`](https://www.npmjs.com/package/typescript) (`^5.6.3`) — TypeScript compiler.
 - [`vitest`](https://www.npmjs.com/package/vitest) (`^2.1.2`) — Automated test runner.
-- [`tsx`](https://www.npmjs.com/package/tsx) (`^4.19.1`) — TypeScript execution for local checks.
+- [`tsx`](https://www.npmjs.com/package/tsx) (`^4.19.1`) — TypeScript execution for local development checks.
 - [`@types/node`](https://www.npmjs.com/package/@types/node) (`^22.7.5`) — Node.js type definitions.
 
 ---
@@ -67,10 +72,10 @@ npm ci
 # Build the TypeScript project
 npm run build
 
-# Run the complete test suite
+# Run the complete test suite (98 tests across 7 suites)
 npm test
 
-# Verify package tarball creation
+# Verify package distribution tarball
 npm pack --dry-run
 ```
 
@@ -106,6 +111,7 @@ supaguard check [options]
 | Option | Flag | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--config <path>` | `-c` | `./supabase/config.toml` | Path to `supabase/config.toml` or the project root directory. |
+| `--migrations <path>` | `-m` | Auto-discovered | Path to migrations directory (defaults to `./supabase/migrations`). |
 | `--format <format>` | `-f` | `text` | Output format: `text` (terminal ANSI) or `json` (machine-readable). |
 | `--strict` | `-s` | `false` | Strict mode: exits with code `1` on any finding (including `MEDIUM`, `LOW`, and `INFO`). |
 | `--help` | `-h` | — | Display command help and available options. |
@@ -114,15 +120,15 @@ supaguard check [options]
 ### Usage Examples
 
 #### 1. Standard Preflight Check
-Run from your project root (automatically locates `./supabase/config.toml`):
+Run from your project root (automatically locates `./supabase/config.toml` and `./supabase/migrations/*.sql`):
 ```bash
 supaguard check
 ```
 
-#### 2. Custom Path
-Specify a direct file path or a custom project directory:
+#### 2. Custom Paths
+Specify a direct config path or an explicit migrations folder:
 ```bash
-supaguard check --config ./custom/path/to/supabase/config.toml
+supaguard check --config ./custom/supabase/config.toml --migrations ./custom/supabase/migrations
 ```
 
 #### 3. Machine-Readable JSON Output
@@ -153,7 +159,9 @@ SupaGuard uses deterministic exit codes to integrate cleanly with automated work
 
 ## Security Rules & Severity Classification
 
-SupaGuard includes 13 built-in security rules mapped to specific settings defined in the [official Supabase CLI configuration specification](https://supabase.com/docs/guides/local-development/cli/config):
+SupaGuard evaluates 15 security checks divided between configuration preflights and SQL migration analysis:
+
+### Configuration Rules (Phase 1)
 
 | Rule ID | Title | Severity | Category | Target Setting |
 | :--- | :--- | :---: | :---: | :--- |
@@ -171,106 +179,117 @@ SupaGuard includes 13 built-in security rules mapped to specific settings define
 | **`SEC-AUTH-008`** | Password Re-Authentication Disabled | `LOW` | `auth` | `auth.email.secure_password_change = false` |
 | **`SEC-ST-001`** | Storage Bucket Configured for Public Access | `INFO` | `storage` | `storage.buckets.<name>.public = true` |
 
----
+### SQL Migration Rules (Phase 2)
 
-## Detailed Rule Explanations & Policy Assumptions
-
-### `SEC-SEC-001`: Plaintext Secrets (`CRITICAL`)
-- **What it checks**: Detects unencrypted credentials, static API keys, and passwords committed directly into `config.toml`.
-- **Policy Assumption**: Production secrets should never exist in version-controlled files.
-- **Remediation**: Use `env(VARIABLE_NAME)` substitution (e.g., `secret = "env(GITHUB_CLIENT_SECRET)"`).
-
-### `SEC-API-001`: Internal System Schema in API List (`HIGH`)
-- **What it checks**: Flags internal database schemas (`auth`, `vault`, `pg_catalog`, `information_schema`, `supabase_functions`, etc.) included in `api.schemas`.
-- **Nuance & Postgres Permission Model**: Exposing a schema in PostgREST exposes endpoints and OpenAPI definitions. Actual data reading and writing remains governed by PostgreSQL role privileges (`GRANT USAGE`, `GRANT SELECT`) and Row Level Security. However, exposing internal schemas unnecessarily expands the attack surface if database permissions are ever misconfigured.
-- **Remediation**: Remove internal schemas from `api.schemas`. Access authentication and secrets via official Supabase client SDKs.
-
-### `SEC-DB-001`: Session Replication Role Set to Replica (`HIGH`)
-- **What it checks**: Flags `db.settings.session_replication_role = "replica"`.
-- **Impact**: In PostgreSQL, `replica` mode bypasses foreign key checks and user triggers, creating data integrity risks.
-- **Remediation**: Remove the setting or set it to `"origin"`.
-
-### `SEC-AUTH-001`: Refresh Token Rotation Disabled (`HIGH`)
-- **What it checks**: Flags `auth.enable_refresh_token_rotation = false`.
-- **Impact**: Allows intercepted refresh tokens to be replayed indefinitely without invalidation.
-- **Remediation**: Enable refresh token rotation (`auth.enable_refresh_token_rotation = true`).
-
-### `SEC-AUTH-002`: Email Change Double Confirmation Disabled (`HIGH`)
-- **What it checks**: Flags `auth.email.double_confirm_changes = false`.
-- **Impact**: Allows an attacker with temporary session access to redirect the account email to a new address without confirmation from the original mailbox.
-- **Remediation**: Enable double confirmation (`auth.email.double_confirm_changes = true`).
-
-### `SEC-AUTH-003`: OIDC Nonce Validation Bypassed (`HIGH`)
-- **What it checks**: Flags `skip_nonce_check = true` on external OIDC providers.
-- **Impact**: Disables cryptographic nonce validation, enabling token replay attacks.
-- **Remediation**: Remove `skip_nonce_check` or set it to `false`.
-
-### `SEC-AUTH-004`: Insecure / Permissive Redirect URLs (`HIGH` / `LOW`)
-- **Three-Tier Classification**:
-  1. **Unencrypted Remote HTTP** (`HIGH`): Cleartext remote redirect URLs (e.g. `http://my-app.com/callback`) expose authorization codes in transit.
-  2. **Open / Unscoped Multi-Tenant Wildcards** (`HIGH`): Broad wildcards (`*`, `https://*`, `https://*.vercel.app/**`, `https://*.netlify.app/**`) allow attackers to register arbitrary subdomains to steal OAuth tokens.
-  3. **Scoped Preview Deployment Wildcards** (`LOW`): Scoped patterns (e.g. `https://*-myteam.vercel.app/**`) are officially supported by Supabase for preview branches. They trigger a low-severity advisory recommending exact URLs for production.
-- **Allowed**: Exact HTTPS callback URLs and `localhost` development URLs.
-
-### `SEC-AUTH-005`: Static SMS Test OTP Present (`HIGH`)
-- **What it checks**: Flags the presence of `[auth.sms.test_otp]`.
-- **Impact**: Fixed verification codes permit authentication bypass if carried into staging or production.
-- **Remediation**: Remove the `[auth.sms.test_otp]` table before deploying.
-
-### `SEC-AUTH-006`: Excessive JWT Expiration Lifetime (`MEDIUM`)
-- **What it checks**: Flags `auth.jwt_expiry` exceeding 86,400 seconds (24 hours).
-- **Impact**: JWTs are bearer tokens that cannot be revoked without rotating project JWT secrets.
-- **Remediation**: Reduce `auth.jwt_expiry` to 3600 seconds (1 hour) and rely on refresh token rotation.
-
-### `SEC-AUTH-007`: OAuth Provider Missing Credentials (`MEDIUM`)
-- **What it checks**: Flags enabled OAuth providers where `client_id` or `secret` is missing or empty.
-- **Impact**: Prevents runtime authentication failures in deployed environments.
-- **Remediation**: Provide valid `env(...)` references for required credentials.
-
-### `SEC-FN-001`: Edge Function JWT Verification Disabled (`MEDIUM`)
-- **What it checks**: Flags Edge Functions configured with `verify_jwt = false`.
-- **False-Positive Consideration**: External webhooks (e.g. Stripe, GitHub) intentionally disable JWT verification because they authenticate requests using HMAC signatures. In these cases, this finding serves as a verification prompt rather than an exploitable defect.
-- **Remediation**: If the function is not a public webhook, set `verify_jwt = true`. If it is a webhook, confirm that signature verification is implemented in the function code.
-
-### `SEC-AUTH-008`: Password Re-Authentication Disabled (`LOW`)
-- **What it checks**: Flags `auth.email.secure_password_change = false`.
-- **Impact**: Allows users to change passwords without confirming their current password.
-- **Remediation**: Set `auth.email.secure_password_change = true`.
-
-### `SEC-ST-001`: Storage Bucket Configured for Public Access (`INFO`)
-- **What it checks**: Notifies when a storage bucket is marked `public = true`.
-- **False-Positive Consideration**: Public buckets are a standard feature for hosting publicly accessible assets (such as profile avatars or marketing images). This check is categorized as `INFO` to provide visibility without failing standard preflight checks.
-- **Remediation**: Ensure the bucket only contains publicly accessible assets. For sensitive data, set `public = false` and use signed URLs or RLS policies.
+| Rule ID | Title | Severity | Category | Target Setting / SQL Statement |
+| :--- | :--- | :---: | :---: | :--- |
+| **`SEC-MIG-RLS-001`** | Table in API-Exposed Schema Lacks Row Level Security | `HIGH` | `migrations` | `CREATE TABLE` without `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` in final state. |
+| **`SEC-MIG-RLS-002`** | Suspicious or Overly Permissive Row Level Security Policy | `HIGH` / `MEDIUM` / `INFO` | `migrations` | `CREATE POLICY` / `ALTER POLICY` with unconditionally true predicates (`USING (true)`, `WITH CHECK (true)`). |
 
 ---
 
-## Output Formats
+## Detailed SQL Migration Rules & Analysis Model
+
+### Migration Discovery and State Aggregation
+1. **Deterministic Processing**: Discovers all `*.sql` files in `supabase/migrations/` and processes them in alphabetical/chronological order.
+2. **Cumulative Final State**: Tracks table creation, RLS enablement, RLS disabling, policy definitions, policy alterations, and table drops across migrations.
+   - If a table is created without RLS in Migration 1, but has RLS enabled in Migration 2, it is **not flagged**.
+   - If a table has RLS enabled, but subsequently disabled in a later migration, it **is flagged**.
+   - If a table is created and subsequently dropped in a later migration, it is **not flagged**.
+   - If a dangerous policy is created and subsequently dropped or tightened in a later migration, it is **not flagged**.
+
+---
+
+### `SEC-MIG-RLS-001`: Missing Row Level Security on API-Exposed Table (`HIGH`)
+
+- **What it checks**: Detects tables created in API-exposed schemas (such as `public` or schemas listed in `api.schemas`) that do not have Row Level Security enabled in the final represented migration state.
+- **Supabase Permission Context**: In Supabase, PostgREST exposes tables in API schemas to `anon` and `authenticated` roles by default. When RLS is disabled, table access is governed solely by PostgreSQL table-level grants (`GRANT SELECT, INSERT...`), completely bypassing row-level filters.
+- **What RLS Does and Does Not Establish**:
+  - Enabling RLS instructs PostgreSQL to enforce row-level policies. If RLS is enabled and zero policies exist, all access is denied by default (fail-closed).
+  - Enabling RLS does not prove that subsequent policies are mathematically correct; rather, it activates row-level policy enforcement.
+- **Remediation**:
+  ```sql
+  ALTER TABLE "public"."your_table" ENABLE ROW LEVEL SECURITY;
+  ```
+
+---
+
+### `SEC-MIG-RLS-002`: Suspicious or Overly Permissive RLS Policies
+
+SupaGuard inspects policy commands (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `ALL`), target roles (`anon`, `authenticated`, `public`), and conditional clauses (`USING`, `WITH CHECK`).
+
+- **Classification Tiers**:
+  1. **Unrestricted Write Access for `anon` or `public` (`HIGH`)**:
+     - Affects write operations (`INSERT`, `UPDATE`, `DELETE`, `ALL`) with unconditionally true predicates (`USING (true)` or `WITH CHECK (true)`).
+     - Allows any anonymous caller on the internet to insert, modify, or delete database rows without validation.
+     - *Remediation*: Restrict writes to authenticated users and require row ownership:
+       ```sql
+       CREATE POLICY "User insert" ON "public"."orders"
+         FOR INSERT TO authenticated
+         WITH CHECK (auth.uid() = user_id);
+       ```
+  2. **Unrestricted Mutation across Rows for `authenticated` (`MEDIUM`)**:
+     - Affects `UPDATE`, `DELETE`, or `ALL` with unconditionally true predicates for `authenticated`.
+     - Allows any logged-in user to modify or delete rows belonging to other users.
+     - *Remediation*: Enforce user ownership in the `USING` clause:
+       ```sql
+       CREATE POLICY "User update own" ON "public"."posts"
+         FOR UPDATE TO authenticated
+         USING (auth.uid() = author_id);
+       ```
+  3. **Unconditional INSERT for `authenticated` (`LOW`)**:
+     - Advisory for `INSERT` with `WITH CHECK (true)` for authenticated users. Useful to prompt verifying that `user_id` fields cannot be spoofed.
+  4. **Public Read-Only Access (`INFO`)**:
+     - Affects `FOR SELECT` with `USING (true)`.
+     - Intentionally public read access is standard for public assets (catalogs, blogs, documentation). SupaGuard reports this as an informative advisory to confirm that the table does not store private user records.
+
+---
+
+### Known SQL Parsing Limitations
+
+1. **Procedural Logic Inside Functions**: SupaGuard statically parses DDL statements. Dynamic SQL executed inside PL/pgSQL functions (`EXECUTE '...'`) is not evaluated.
+2. **Unsupported Custom Grammar**: SupaGuard relies on the official PostgreSQL 18 grammar engine. Non-standard syntax or proprietary third-party preprocessor directives will produce a `SEC-MIG-PARSE-ERR` diagnostic finding without crashing the scan.
+3. **External Schema Objects**: Objects created dynamically by external extensions without explicit SQL DDL are outside static migration scope.
+
+---
+
+## Output Examples
 
 ### Terminal Output (`--format text`)
-Terminal reports display ANSI-colored, formatted findings grouped by severity, complete with configuration path, observed value, rationale, policy assumption, and recommended remediation:
 
 ```
 ======================================================================
  SupaGuard — Supabase Security Preflight Analyzer
 ======================================================================
 Target File: ./supabase/config.toml
-Timestamp:   2026-10-12T15:00:00.000Z
+Timestamp:   2026-10-12T15:50:00.000Z
 Mode:        Standard (high/critical fail)
-Rules Checked: 13
+Rules Checked: 15
 ----------------------------------------------------------------------
 
-[1/1] [CRITICAL] Plaintext Secret in Configuration File (SEC-SEC-001)
-   Config Path:      auth.external.github.secret
-   Observed Value:   [REDACTED_SECRET (length: 32)]
-   Category:         secrets
-   Rationale:        The setting "auth.external.github.secret" contains an unencrypted plaintext credential or literal secret.
-   Policy Assumption: All secrets in config.toml must reference environment variables via env(VARIABLE_NAME).
-   ➜ Remediation:    Replace the hardcoded secret at "auth.external.github.secret" with an environment variable reference, e.g. 'env(YOUR_SECRET_NAME)'.
+[1/2] [HIGH] Table in API-Exposed Schema Lacks Row Level Security (SEC-MIG-RLS-001)
+   Migration Path:   supabase/migrations/20240101000000_init.sql:2
+   Target Table:   public.orders
+   Observed Value: Row Level Security disabled (final state)
+   Category:       migrations
+   Rationale:      Table "public.orders" was created in "supabase/migrations/20240101000000_init.sql" (line 2) in schema "public" exposed by PostgREST, but does not have Row Level Security (RLS) enabled.
+   Policy Assumption: All persistent database tables in API-exposed schemas must have Row Level Security enabled.
+   ➜ Remediation:    Add "ALTER TABLE "orders" ENABLE ROW LEVEL SECURITY;" in a migration.
+
+[2/2] [HIGH] Unrestricted Write Access Allowed by RLS Policy (SEC-MIG-RLS-002)
+   Migration Path:   supabase/migrations/20240102000000_feedback.sql:9
+   Target Table:   public.feedback
+   Policy Name:    "Anon open insert"
+   Observed Value: Policy "Anon open insert" allows unrestricted "INSERT" via WITH CHECK (true) to roles: [anon]
+   Category:       migrations
+   Rationale:      Policy "Anon open insert" on table "public.feedback" grants unrestricted write access to unauthenticated callers.
+   Policy Assumption: Write operations must enforce authentication and row ownership checks.
+   ➜ Remediation:    Scope policy "Anon open insert" to authenticated users and add row-level ownership checks.
 
 ----------------------------------------------------------------------
 Summary Findings:
-  Critical: 1
-  High:     0
+  Critical: 0
+  High:     2
   Medium:   0
   Low:      0
   Info:     0
@@ -279,31 +298,34 @@ Summary Findings:
 ```
 
 ### JSON Output (`--format json`)
-Emits strictly valid JSON structured for programmatic parsing:
 
 ```json
 {
   "targetPath": "D:\\my-project\\supabase\\config.toml",
   "strict": false,
-  "timestamp": "2026-10-12T15:00:00.000Z",
+  "timestamp": "2026-10-12T15:50:00.000Z",
   "findings": [
     {
-      "ruleId": "SEC-SEC-001",
-      "ruleTitle": "Plaintext Secret in Configuration File",
-      "severity": "critical",
-      "category": "secrets",
-      "path": "auth.external.github.secret",
-      "observedValue": "[REDACTED_SECRET (length: 32)]",
-      "rationale": "The setting \"auth.external.github.secret\" contains an unencrypted plaintext credential or literal secret.",
-      "policyAssumption": "All secrets in config.toml must reference environment variables via env(VARIABLE_NAME).",
-      "remediation": "Replace the hardcoded secret at \"auth.external.github.secret\" with an environment variable reference, e.g. 'env(YOUR_SECRET_NAME)'."
+      "ruleId": "SEC-MIG-RLS-001",
+      "ruleTitle": "Table in API-Exposed Schema Lacks Row Level Security",
+      "severity": "high",
+      "category": "migrations",
+      "path": "supabase/migrations/20240101000000_init.sql:2",
+      "observedValue": "Row Level Security disabled (final state)",
+      "rationale": "Table \"public.orders\" was created in \"supabase/migrations/20240101000000_init.sql\" (line 2) in schema \"public\" exposed by PostgREST, but does not have Row Level Security (RLS) enabled in the final migration state.",
+      "policyAssumption": "All persistent database tables in API-exposed schemas must have Row Level Security enabled (ALTER TABLE ... ENABLE ROW LEVEL SECURITY).",
+      "remediation": "Add \"ALTER TABLE \"orders\" ENABLE ROW LEVEL SECURITY;\" in a migration, and create appropriate policies using CREATE POLICY.",
+      "filePath": "supabase/migrations/20240101000000_init.sql",
+      "line": 2,
+      "schema": "public",
+      "table": "orders"
     }
   ],
   "summary": {
-    "totalRulesEvaluated": 13,
+    "totalRulesEvaluated": 15,
     "totalFindings": 1,
-    "critical": 1,
-    "high": 0,
+    "critical": 0,
+    "high": 1,
     "medium": 0,
     "low": 0,
     "info": 0,
@@ -312,15 +334,6 @@ Emits strictly valid JSON structured for programmatic parsing:
   "exitCode": 1
 }
 ```
-
----
-
-## Known Limitations
-
-1. **Local-Only Configuration Scope**: SupaGuard only inspects `supabase/config.toml`. It does not analyze SQL migration scripts, database permissions, or remote cloud resources.
-2. **PostgreSQL Runtime Permissions**: Settings such as `api.schemas` declare routing visibility in PostgREST, but effective database access depends on PostgreSQL table permissions and Row Level Security (RLS) policies.
-3. **Secret Presence vs. Secret Validity**: SupaGuard confirms that secrets are parameterized via `env(...)` and not committed as plaintext. It does not verify whether the referenced environment variables exist or contain valid credentials.
-4. **No Automatic File Fixes**: SupaGuard is an analyzer and reporter; it never automatically modifies configuration files.
 
 ---
 

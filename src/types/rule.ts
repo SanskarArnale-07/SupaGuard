@@ -12,13 +12,14 @@ export type RuleCategory =
   | 'database'
   | 'functions'
   | 'secrets'
-  | 'storage';
+  | 'storage'
+  | 'migrations';
 
 /**
  * A security finding produced by an active rule.
  */
 export interface Finding {
-  /** Unique rule identifier, e.g. 'SEC-AUTH-001' */
+  /** Unique rule identifier, e.g. 'SEC-AUTH-001' or 'SEC-MIG-RLS-001' */
   ruleId: string;
   /** Human-readable title of the rule */
   ruleTitle: string;
@@ -26,9 +27,9 @@ export interface Finding {
   severity: Severity;
   /** Category */
   category: RuleCategory;
-  /** Exact configuration path, e.g. 'auth.enable_refresh_token_rotation' */
+  /** Exact configuration path or migration location, e.g. 'auth.enable_refresh_token_rotation' or 'supabase/migrations/01_init.sql:12' */
   path: string;
-  /** Observed value as a safe string (sensitive values masked) */
+  /** Observed value or condition as a safe string (sensitive values masked) */
   observedValue: string;
   /** Detailed rationale explaining why this setting is security-sensitive */
   rationale: string;
@@ -36,6 +37,16 @@ export interface Finding {
   policyAssumption: string;
   /** Actionable remediation advice */
   remediation: string;
+  /** Source migration file path (if finding originates from a migration) */
+  filePath?: string;
+  /** Line number in source migration file */
+  line?: number;
+  /** Affected database schema */
+  schema?: string;
+  /** Affected database table */
+  table?: string;
+  /** Name of affected RLS policy (if applicable) */
+  policyName?: string;
 }
 
 /**

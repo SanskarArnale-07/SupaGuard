@@ -11,11 +11,12 @@ import { createCliCommand, type CliOptions } from './options.js';
 export async function runCli(argv: string[] = process.argv): Promise<ExitCodeValue> {
   let resolvedExitCode: ExitCodeValue = ExitCode.SUCCESS;
 
-  const handleCheck = (options: CliOptions) => {
+  const handleCheck = async (options: CliOptions) => {
     const rawFormat = (options.format || 'text').toLowerCase();
     const format: ReportFormat = rawFormat === 'json' ? 'json' : 'text';
     const strict = Boolean(options.strict);
     const configPath = options.config;
+    const migrationsDir = options.migrations;
 
     const loadResult = loadConfig({ configPath });
 
@@ -53,7 +54,10 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
       return;
     }
 
-    const analysis = analyzeConfig(loadResult.config, { strict });
+    const analysis = await analyzeConfig(loadResult.config, {
+      strict,
+      migrationsDir,
+    });
     const output = formatReport(analysis, format);
 
     process.stdout.write(output + '\n');
@@ -84,6 +88,6 @@ const isMain =
 
 if (isMain) {
   runCli().then((code) => {
-    process.exit(code);
+    process.exitCode = code;
   });
 }

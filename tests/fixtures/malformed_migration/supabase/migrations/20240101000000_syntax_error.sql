@@ -1,0 +1,3 @@
+CREATE TABLE valid_table (id int);
+
+THIS IS INVALID POSTGRESQL SYNTAX ERROR !!!;

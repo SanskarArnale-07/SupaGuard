@@ -1,0 +1,15 @@
+project_id = "secure-migrations-project"
+
+[api]
+schemas = ["public"]
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["https://my-app.com/callback"]
+enable_refresh_token_rotation = true
+jwt_expiry = 3600
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+secure_password_change = true

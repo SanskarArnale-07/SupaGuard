@@ -81,9 +81,11 @@ describe('CLI End-to-End Test Suite', () => {
     expect(parsed.summary.critical).toBeGreaterThan(0);
 
     // Verify raw secrets are strictly redacted
-    expect(capturedOutput).not.toContain('ghp_super_secret');
-    expect(capturedOutput).not.toContain('sk-proj-live-api-key');
-    expect(capturedOutput).not.toContain('smtp_super_secret_password');
+    expect(capturedOutput).not.toContain('FAKE_TEST_SECRET_DO_NOT_USE');
+    expect(capturedOutput).not.toContain('FAKE_TEST_SECRET_DO_NOT_USE_GITHUB');
+    expect(capturedOutput).not.toContain('FAKE_TEST_SECRET_DO_NOT_USE_OPENAI');
+    expect(capturedOutput).not.toContain('FAKE_TEST_SECRET_DO_NOT_USE_SMTP');
+    expect(capturedOutput).not.toContain('FAKE_TEST_SECRET_DO_NOT_USE_S3');
     expect(capturedOutput).toContain('[REDACTED_SECRET');
   });
 

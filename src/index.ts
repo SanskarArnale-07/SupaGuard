@@ -10,6 +10,10 @@ export { createRuleContext, getByPath } from './config/context.js';
 export { RuleRegistry, defaultRegistry } from './rules/registry.js';
 export { ALL_BUILTIN_RULES } from './rules/index.js';
 export * from './rules/index.js';
+export * from './rules/migrations/index.js';
+
+// SQL Migrations
+export * from './migrations/index.js';
 
 // Reporters & Formatting
 export { formatReport, formatJsonReport, formatTextReport } from './reporter/index.js';

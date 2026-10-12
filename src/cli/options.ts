@@ -3,11 +3,12 @@ import type { ReportFormat } from '../types/report.js';
 
 export interface CliOptions {
   config?: string;
+  migrations?: string;
   format: ReportFormat;
   strict: boolean;
 }
 
-export function createCliCommand(onCheck?: (options: CliOptions) => void): Command {
+export function createCliCommand(onCheck?: (options: CliOptions) => void | Promise<void>): Command {
   const program = new Command();
 
   program
@@ -18,10 +19,14 @@ export function createCliCommand(onCheck?: (options: CliOptions) => void): Comma
 
   const checkCommand = program
     .command('check', { isDefault: true })
-    .description('Run local security preflight checks against supabase/config.toml')
+    .description('Run local security preflight checks against supabase/config.toml and migrations')
     .option(
       '-c, --config <path>',
       'Path to supabase/config.toml or the project root directory (default: ./supabase/config.toml)'
+    )
+    .option(
+      '-m, --migrations <path>',
+      'Path to migrations directory (default: auto-discovered ./supabase/migrations)'
     )
     .option(
       '-f, --format <format>',
@@ -35,8 +40,8 @@ export function createCliCommand(onCheck?: (options: CliOptions) => void): Comma
     );
 
   if (onCheck) {
-    checkCommand.action((rawOptions) => {
-      onCheck(rawOptions as CliOptions);
+    checkCommand.action(async (rawOptions) => {
+      await onCheck(rawOptions as CliOptions);
     });
   }
 
