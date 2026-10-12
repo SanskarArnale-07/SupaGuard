@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import pc from 'picocolors';
 import { analyzeConfig } from '../analyzer/index.js';
 import { loadConfig } from '../config/loader.js';
@@ -52,6 +54,96 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
         }
       }
       return;
+    }
+
+    // Validate explicit migrations directory if provided
+    if (migrationsDir) {
+      const resolvedMigrationsPath = path.resolve(process.cwd(), migrationsDir);
+      if (!fs.existsSync(resolvedMigrationsPath)) {
+        resolvedExitCode = ExitCode.CONFIG_ERROR;
+        const message = `Explicit migrations directory not found: "${migrationsDir}"`;
+        if (format === 'json') {
+          process.stdout.write(
+            JSON.stringify(
+              {
+                success: false,
+                error: {
+                  code: 'MIGRATIONS_DIR_NOT_FOUND',
+                  message,
+                },
+                exitCode: ExitCode.CONFIG_ERROR,
+              },
+              null,
+              2
+            ) + '\n'
+          );
+        } else {
+          process.stderr.write(
+            `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+          );
+          process.stderr.write(
+            `${pc.dim('Hint:')} Verify that the path passed to ${pc.cyan('--migrations')} exists, or omit the flag to use default discovery.\n\n`
+          );
+        }
+        return;
+      }
+
+      try {
+        const stat = fs.statSync(resolvedMigrationsPath);
+        if (!stat.isDirectory()) {
+          resolvedExitCode = ExitCode.CONFIG_ERROR;
+          const message = `Explicit migrations path is not a directory: "${migrationsDir}"`;
+          if (format === 'json') {
+            process.stdout.write(
+              JSON.stringify(
+                {
+                  success: false,
+                  error: {
+                    code: 'MIGRATIONS_DIR_NOT_DIRECTORY',
+                    message,
+                  },
+                  exitCode: ExitCode.CONFIG_ERROR,
+                },
+                null,
+                2
+              ) + '\n'
+            );
+          } else {
+            process.stderr.write(
+              `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+            );
+            process.stderr.write(
+              `${pc.dim('Hint:')} Pass a directory containing SQL migration files, not a single file.\n\n`
+            );
+          }
+          return;
+        }
+      } catch (err: unknown) {
+        resolvedExitCode = ExitCode.CONFIG_ERROR;
+        const errObj = err as { message?: string };
+        const message = `Cannot access migrations path: ${errObj.message || migrationsDir}`;
+        if (format === 'json') {
+          process.stdout.write(
+            JSON.stringify(
+              {
+                success: false,
+                error: {
+                  code: 'MIGRATIONS_DIR_ACCESS_ERROR',
+                  message,
+                },
+                exitCode: ExitCode.CONFIG_ERROR,
+              },
+              null,
+              2
+            ) + '\n'
+          );
+        } else {
+          process.stderr.write(
+            `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+          );
+        }
+        return;
+      }
     }
 
     const analysis = await analyzeConfig(loadResult.config, {

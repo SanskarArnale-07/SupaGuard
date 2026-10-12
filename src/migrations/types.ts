@@ -13,6 +13,30 @@ export interface MigrationFile {
 }
 
 /**
+ * Represents a migration file that could not be read during discovery.
+ */
+export interface UnreadableMigrationFile {
+  /** Relative path from project root, e.g. "supabase/migrations/20240101000000_init.sql" */
+  relativePath: string;
+  /** Absolute filesystem path */
+  absolutePath: string;
+  /** File basename, e.g. "20240101000000_init.sql" */
+  filename: string;
+  /** Error message describing why reading failed */
+  error: string;
+}
+
+/**
+ * Represents a failure encountered while locating, inspecting, or listing a migrations directory.
+ */
+export interface MigrationDiscoveryError {
+  /** Filesystem path to the migrations directory */
+  dirPath: string;
+  /** Error message describing why discovery or listing failed */
+  error: string;
+}
+
+/**
  * Supported RLS policy operations.
  */
 export type PolicyCommand = 'select' | 'insert' | 'update' | 'delete' | 'all';

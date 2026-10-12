@@ -1,7 +1,8 @@
+import * as path from 'node:path';
 import { createRuleContext } from '../config/context.js';
-import { discoverMigrations } from '../migrations/discover.js';
+import { discoverMigrations, type DiscoveryOptions } from '../migrations/discover.js';
 import { buildMigrationDatabaseState } from '../migrations/state.js';
-import type { MigrationFile } from '../migrations/types.js';
+import type { MigrationFile, UnreadableMigrationFile, MigrationDiscoveryError } from '../migrations/types.js';
 import { defaultRegistry } from '../rules/index.js';
 import { checkMissingRls } from '../rules/migrations/missing-rls.js';
 import { checkSuspiciousPolicies } from '../rules/migrations/suspicious-policies.js';
@@ -18,6 +19,12 @@ export interface AnalyzerOptions {
   migrationsDir?: string;
   /** In-memory migration files (optional, useful for testing) */
   migrations?: MigrationFile[];
+  /** In-memory unreadable migration files (optional, useful for testing) */
+  unreadableMigrations?: UnreadableMigrationFile[];
+  /** In-memory discovery errors (optional, useful for testing) */
+  discoveryErrors?: MigrationDiscoveryError[];
+  /** Custom migration discovery options for dependency injection / testing */
+  discoveryOptions?: Partial<DiscoveryOptions>;
   /** Whether to skip migration scanning entirely (default false) */
   skipMigrations?: boolean;
 }
@@ -72,32 +79,88 @@ export async function analyzeConfig(
   // 2. Evaluate SQL migrations (Phase 2)
   let migrationRulesCount = 0;
   if (!options.skipMigrations) {
-    const migrations =
-      options.migrations ??
-      discoverMigrations({
+    let migrations: MigrationFile[] = [];
+    let readErrors: UnreadableMigrationFile[] = options.unreadableMigrations ?? [];
+    let discoveryErrors: MigrationDiscoveryError[] = options.discoveryErrors ?? [];
+
+    if (options.migrations) {
+      migrations = options.migrations;
+      if ((options.migrations as any).readErrors) {
+        readErrors = [...readErrors, ...(options.migrations as any).readErrors];
+      }
+      if ((options.migrations as any).discoveryErrors) {
+        discoveryErrors = [...discoveryErrors, ...(options.migrations as any).discoveryErrors];
+      }
+    } else {
+      const discovered = discoverMigrations({
         configPath: config.filePath,
         migrationsDir: options.migrationsDir,
+        ...options.discoveryOptions,
       });
+      migrations = discovered;
+      readErrors = [...readErrors, ...discovered.readErrors];
+      discoveryErrors = [...discoveryErrors, ...discovered.discoveryErrors];
+    }
+
+    if (migrations.length > 0 || readErrors.length > 0 || discoveryErrors.length > 0) {
+      migrationRulesCount = 2; // SEC-MIG-RLS-001 and SEC-MIG-RLS-002
+    }
+
+    // Record discovery errors as HIGH-severity diagnostics
+    for (const discErr of discoveryErrors) {
+      const displayPath =
+        path.relative(process.cwd(), discErr.dirPath).replace(/\\/g, '/') || discErr.dirPath;
+      allFindings.push({
+        ruleId: 'SEC-MIG-DISCOVERY-ERR',
+        ruleTitle: 'Migrations Directory Discovery Failure',
+        severity: 'high',
+        category: 'migrations',
+        path: displayPath,
+        observedValue: discErr.error,
+        rationale: `The migrations directory "${displayPath}" was located but could not be inspected or listed (${discErr.error}). Security preflight analysis was incomplete because migrations in this directory could not be discovered or evaluated.`,
+        policyAssumption:
+          'Located migration directories must be accessible and readable so security preflights can accurately evaluate database state.',
+        remediation:
+          'Verify directory permissions and ensure SupaGuard has permission to read and list the migrations directory.',
+        filePath: displayPath,
+      });
+    }
+
+    // Record unreadable migration files as HIGH-severity diagnostics
+    for (const readErr of readErrors) {
+      allFindings.push({
+        ruleId: 'SEC-MIG-READ-ERR',
+        ruleTitle: 'Unreadable SQL Migration File',
+        severity: 'high',
+        category: 'migrations',
+        path: readErr.relativePath || readErr.filename,
+        observedValue: readErr.error,
+        rationale: `The migration file "${readErr.filename}" could not be read (${readErr.error}). Security analysis of this migration was incomplete because its SQL statements could not be evaluated.`,
+        policyAssumption:
+          'All SQL migration files must be accessible and readable so security preflights can accurately evaluate database state.',
+        remediation: 'Verify file permissions and ensure that SupaGuard has read access to all migration files.',
+        filePath: readErr.relativePath || readErr.filename,
+      });
+    }
 
     if (migrations.length > 0) {
-      migrationRulesCount = 2; // SEC-MIG-RLS-001 and SEC-MIG-RLS-002
-
       try {
         const dbState = await buildMigrationDatabaseState(migrations);
 
-        // Record any SQL syntax failures gracefully
+        // Record any SQL syntax failures as HIGH-severity diagnostics (incomplete preflight cannot pass exit 0)
         for (const err of dbState.syntaxErrors) {
           allFindings.push({
             ruleId: 'SEC-MIG-PARSE-ERR',
             ruleTitle: 'SQL Migration Syntax Error',
-            severity: 'medium',
+            severity: 'high',
             category: 'migrations',
             path: `${err.file}:${err.line}`,
             observedValue: err.message,
-            rationale: `The migration "${err.file}" contains unparseable SQL syntax at line ${err.line}, column ${err.column}. Security analysis could not evaluate statements in this migration.`,
+            rationale: `The migration "${err.file}" contains unparseable SQL syntax at line ${err.line}, column ${err.column}. Security analysis of this migration was incomplete because its SQL statements could not be evaluated.`,
             policyAssumption:
               'Migration files must contain valid PostgreSQL syntax so security preflights can accurately evaluate database state.',
-            remediation: 'Inspect and fix the SQL syntax error in the migration file.',
+            remediation:
+              'Inspect and fix the SQL syntax error in the migration file so that SupaGuard can perform a complete security preflight.',
             filePath: err.file,
             line: err.line,
           });

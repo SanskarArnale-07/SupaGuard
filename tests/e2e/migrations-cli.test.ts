@@ -118,7 +118,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
     expect(typeof unprotected.line).toBe('number');
   });
 
-  it('handles malformed migration SQL gracefully without crashing (records diagnostic finding)', async () => {
+  it('handles malformed migration SQL gracefully without crashing (records diagnostic finding and fails standard mode)', async () => {
     const configPath = path.join(fixturesDir, 'malformed_migration', 'supabase', 'config.toml');
 
     let capturedStderr = '';
@@ -143,10 +143,102 @@ describe('SQL Migration End-to-End CLI Suite', () => {
       process.stderr.write = origStderr;
     }
 
-    // In standard mode, medium finding triggers exit 0, but in strict mode triggers exit 1
+    // High severity finding MUST trigger exit 1 in standard mode (cannot pass exit 0 with unparseable SQL)
+    expect(exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+    expect(capturedStdout).toContain('PREFLIGHT FAILED');
     expect(capturedStdout).toContain('SEC-MIG-PARSE-ERR');
     expect(capturedStdout).toContain('SQL Migration Syntax Error');
     expect(capturedStdout).toContain('20240101000000_syntax_error.sql:3');
+    expect(capturedStdout).toContain('incomplete');
+  });
+
+  it('aborts with exit code 2 (CONFIG_ERROR) when explicit --migrations directory does not exist', async () => {
+    const configPath = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+    let capturedStderr = '';
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      capturedStderr += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli([
+        'node',
+        'supaguard',
+        'check',
+        '--config',
+        configPath,
+        '--migrations',
+        './nonexistent_migrations_dir_12345',
+      ]);
+    } finally {
+      process.stderr.write = origStderr;
+    }
+
+    expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
+    expect(capturedStderr).toContain('Explicit migrations directory not found');
+  });
+
+  it('aborts with exit code 2 (CONFIG_ERROR) when explicit --migrations path is a file', async () => {
+    const configPath = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+    let capturedStderr = '';
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      capturedStderr += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli([
+        'node',
+        'supaguard',
+        'check',
+        '--config',
+        configPath,
+        '--migrations',
+        configPath,
+      ]);
+    } finally {
+      process.stderr.write = origStderr;
+    }
+
+    expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
+    expect(capturedStderr).toContain('Explicit migrations path is not a directory');
+  });
+
+  it('outputs JSON error with exit code 2 when explicit --migrations path is missing in JSON mode', async () => {
+    const configPath = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+    let capturedStdout = '';
+    const origStdout = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedStdout += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli([
+        'node',
+        'supaguard',
+        'check',
+        '--config',
+        configPath,
+        '--migrations',
+        './nonexistent_migrations_dir_json',
+        '--format',
+        'json',
+      ]);
+    } finally {
+      process.stdout.write = origStdout;
+    }
+
+    expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
+    const parsed = JSON.parse(capturedStdout);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error.code).toBe('MIGRATIONS_DIR_NOT_FOUND');
+    expect(parsed.exitCode).toBe(ExitCode.CONFIG_ERROR);
   });
 
   it('guarantees zero modifications to inspected SQL migration files (read-only safety invariant)', async () => {

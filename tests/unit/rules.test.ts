@@ -182,14 +182,37 @@ describe('Security Rules Registry & Verification', () => {
         [auth]
         additional_redirect_urls = [
           "https://*.vercel.app/**",
-          "https://*.netlify.app/**"
+          "https://*.netlify.app/**",
+          "https://*.onrender.com/**",
+          "https://*.up.railway.app/**",
+          "https://*.fly.dev/**",
+          "https://*.amplifyapp.com/**"
         ]
       `);
       const findings = insecureRedirectUrlsRule.check(ctx);
-      expect(findings).toHaveLength(2);
-      expect(findings[0].severity).toBe('high');
-      expect(findings[1].severity).toBe('high');
-      expect(findings[0].rationale).toContain('multi-tenant hosting platforms');
+      expect(findings).toHaveLength(6);
+      for (const finding of findings) {
+        expect(finding.severity).toBe('high');
+        expect(finding.rationale).toContain('multi-tenant hosting platforms');
+      }
+    });
+
+    it('classifies scoped preview deployment wildcards on multi-tenant hosts as low severity', () => {
+      const ctx = makeContext(`
+        [auth]
+        additional_redirect_urls = [
+          "https://*-myteam.onrender.com/**",
+          "https://myproj-*.up.railway.app/**",
+          "https://*-staging.fly.dev/**",
+          "https://main-*.amplifyapp.com/**"
+        ]
+      `);
+      const findings = insecureRedirectUrlsRule.check(ctx);
+      expect(findings).toHaveLength(4);
+      for (const finding of findings) {
+        expect(finding.severity).toBe('low');
+        expect(finding.ruleTitle).toContain('Scoped Wildcard');
+      }
     });
 
     it('flags unencrypted HTTP redirect URLs to remote hosts as high severity', () => {

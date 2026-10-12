@@ -1,11 +1,14 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { analyzeConfig } from '../../src/analyzer/index.js';
 import { discoverMigrations, resolveMigrationsDir } from '../../src/migrations/discover.js';
 import { isUnrestrictedPredicate, offsetToLineAndColumn, parseMigrationSql } from '../../src/migrations/parser.js';
 import { buildMigrationDatabaseState } from '../../src/migrations/state.js';
 import type { MigrationFile } from '../../src/migrations/types.js';
 import { checkMissingRls } from '../../src/rules/migrations/missing-rls.js';
 import { checkSuspiciousPolicies } from '../../src/rules/migrations/suspicious-policies.js';
+import { ExitCode } from '../../src/types/exit-codes.js';
 
 describe('SQL Migration Security Scanner Suite', () => {
   const fixturesDir = path.resolve(__dirname, '../fixtures');
@@ -32,6 +35,224 @@ describe('SQL Migration Security Scanner Suite', () => {
       const ghostConfig = path.join(fixturesDir, 'ghost_dir', 'supabase', 'config.toml');
       const migrations = discoverMigrations({ configPath: ghostConfig });
       expect(migrations).toEqual([]);
+    });
+
+    it('throws an error when explicitly supplied migrationsDir does not exist', () => {
+      expect(() => {
+        discoverMigrations({ migrationsDir: './nonexistent/path/to/migrations' });
+      }).toThrow('Explicit migrations directory not found');
+    });
+
+    it('throws an error when explicitly supplied migrationsDir points to a file', () => {
+      const filePath = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+      expect(() => {
+        discoverMigrations({ migrationsDir: filePath });
+      }).toThrow('Explicit migrations path is not a directory');
+    });
+
+    it('preserves diagnostics for unreadable migration files using dependency injection', () => {
+      const secureConfig = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+      const result = discoverMigrations({
+        configPath: secureConfig,
+        readFileSync: (filePath, encoding) => {
+          if (filePath.includes('20240101000000_create_tables.sql')) {
+            const err = new Error('Permission denied');
+            (err as any).code = 'EACCES';
+            throw err;
+          }
+          return fs.readFileSync(filePath, encoding);
+        },
+      });
+
+      expect(result.length).toBe(3);
+      expect(result.readErrors.length).toBe(1);
+      expect(result.readErrors[0].filename).toBe('20240101000000_create_tables.sql');
+      expect(result.readErrors[0].error).toContain('EACCES');
+    });
+
+    it('emits high severity SEC-MIG-READ-ERR and fails preflight when unreadable migrations exist', async () => {
+      const fakeConfig = {
+        filePath: '/workspace/supabase/config.toml',
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(fakeConfig as any, {
+        unreadableMigrations: [
+          {
+            filename: '20240101000000_secret.sql',
+            absolutePath: '/workspace/supabase/migrations/20240101000000_secret.sql',
+            relativePath: 'supabase/migrations/20240101000000_secret.sql',
+            error: 'Cannot read file: EACCES: permission or read error',
+          },
+        ],
+      });
+
+      expect(analysis.summary.passed).toBe(false);
+      expect(analysis.exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+      const readFinding = analysis.findings.find((f) => f.ruleId === 'SEC-MIG-READ-ERR');
+      expect(readFinding).toBeDefined();
+      expect(readFinding?.severity).toBe('high');
+      expect(readFinding?.rationale).toContain('incomplete');
+      expect(readFinding?.observedValue).toBe('Cannot read file: EACCES: permission or read error');
+    });
+
+    it('emits high severity SEC-MIG-PARSE-ERR and fails standard mode preflight for syntax errors', async () => {
+      const fakeConfig = {
+        filePath: '/workspace/supabase/config.toml',
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(fakeConfig as any, {
+        migrations: [
+          {
+            filename: '20240101000000_bad.sql',
+            absolutePath: '/workspace/supabase/migrations/20240101000000_bad.sql',
+            relativePath: 'supabase/migrations/20240101000000_bad.sql',
+            content: 'CREATE TABLE incomplete (',
+          },
+        ],
+      });
+
+      expect(analysis.summary.passed).toBe(false);
+      expect(analysis.exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+      const parseFinding = analysis.findings.find((f) => f.ruleId === 'SEC-MIG-PARSE-ERR');
+      expect(parseFinding).toBeDefined();
+      expect(parseFinding?.severity).toBe('high');
+      expect(parseFinding?.rationale).toContain('incomplete');
+    });
+
+    it('fails preflight in analyzeConfig when discoveryOptions injects an unreadable migration', async () => {
+      const secureConfig = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+      const loaded = {
+        filePath: secureConfig,
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(loaded as any, {
+        discoveryOptions: {
+          readFileSync: (filePath, encoding) => {
+            if (filePath.includes('20240101000000_create_tables.sql')) {
+              const err = new Error('Permission denied');
+              (err as any).code = 'EACCES';
+              throw err;
+            }
+            return fs.readFileSync(filePath, encoding);
+          },
+        },
+      });
+
+      expect(analysis.summary.passed).toBe(false);
+      expect(analysis.exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+      const readFinding = analysis.findings.find((f) => f.ruleId === 'SEC-MIG-READ-ERR');
+      expect(readFinding).toBeDefined();
+      expect(readFinding?.severity).toBe('high');
+      expect(readFinding?.path).toContain('20240101000000_create_tables.sql');
+    });
+
+    it('captures structured discovery diagnostic when stat on located migrations directory throws', () => {
+      const secureConfig = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+      const result = discoverMigrations({
+        configPath: secureConfig,
+        statSync: (targetPath) => {
+          if (targetPath.replace(/\\/g, '/').endsWith('supabase/migrations')) {
+            const err = new Error('Permission denied');
+            (err as any).code = 'EACCES';
+            throw err;
+          }
+          return fs.statSync(targetPath);
+        },
+      });
+
+      expect(result.length).toBe(0);
+      expect(result.discoveryErrors.length).toBe(1);
+      expect(result.discoveryErrors[0].error).toContain('Cannot inspect migrations directory');
+      expect(result.discoveryErrors[0].error).toContain('EACCES');
+    });
+
+    it('captures structured discovery diagnostic when listing located migrations directory throws', () => {
+      const secureConfig = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+      const result = discoverMigrations({
+        configPath: secureConfig,
+        readdirSync: () => {
+          const err = new Error('Permission denied');
+          (err as any).code = 'EACCES';
+          throw err;
+        },
+      });
+
+      expect(result.length).toBe(0);
+      expect(result.discoveryErrors.length).toBe(1);
+      expect(result.discoveryErrors[0].error).toContain('Cannot list migrations directory');
+      expect(result.discoveryErrors[0].error).toContain('EACCES');
+    });
+
+    it('emits high severity SEC-MIG-DISCOVERY-ERR and fails preflight in analyzeConfig when directory inspection fails', async () => {
+      const secureConfig = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+      const loaded = {
+        filePath: secureConfig,
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(loaded as any, {
+        discoveryOptions: {
+          statSync: (targetPath) => {
+            if (targetPath.replace(/\\/g, '/').endsWith('supabase/migrations')) {
+              const err = new Error('Permission denied');
+              (err as any).code = 'EACCES';
+              throw err;
+            }
+            return fs.statSync(targetPath);
+          },
+        },
+      });
+
+      expect(analysis.summary.passed).toBe(false);
+      expect(analysis.exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+      const discFinding = analysis.findings.find((f) => f.ruleId === 'SEC-MIG-DISCOVERY-ERR');
+      expect(discFinding).toBeDefined();
+      expect(discFinding?.severity).toBe('high');
+      expect(discFinding?.rationale).toContain('incomplete');
+      expect(discFinding?.observedValue).toContain('EACCES');
+    });
+
+    it('emits high severity SEC-MIG-DISCOVERY-ERR and fails preflight in analyzeConfig when directory listing fails', async () => {
+      const secureConfig = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
+      const loaded = {
+        filePath: secureConfig,
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(loaded as any, {
+        discoveryOptions: {
+          readdirSync: () => {
+            const err = new Error('Permission denied');
+            (err as any).code = 'EACCES';
+            throw err;
+          },
+        },
+      });
+
+      expect(analysis.summary.passed).toBe(false);
+      expect(analysis.exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+      const discFinding = analysis.findings.find((f) => f.ruleId === 'SEC-MIG-DISCOVERY-ERR');
+      expect(discFinding).toBeDefined();
+      expect(discFinding?.severity).toBe('high');
+      expect(discFinding?.rationale).toContain('incomplete');
+      expect(discFinding?.observedValue).toContain('EACCES');
+    });
+
+    it('preserves clean pass without discovery errors for normal project without migrations directory', async () => {
+      const normalConfig = path.join(fixturesDir, 'normal_secure', 'supabase', 'config.toml');
+      const loaded = {
+        filePath: normalConfig,
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(loaded as any);
+      expect(analysis.summary.passed).toBe(true);
+      expect(analysis.exitCode).toBe(ExitCode.SUCCESS);
+      const discFinding = analysis.findings.find((f) => f.ruleId === 'SEC-MIG-DISCOVERY-ERR');
+      expect(discFinding).toBeUndefined();
     });
   });
 

@@ -22,6 +22,14 @@ const UNSCOPED_MULTI_TENANT_PATTERNS = [
   /^https?:\/\/\*\.pages\.dev(?:\/.*)?$/i,
   /^https?:\/\/\*\.firebaseapp\.com(?:\/.*)?$/i,
   /^https?:\/\/\*\.azurewebsites\.net(?:\/.*)?$/i,
+  /^https?:\/\/\*\.onrender\.com(?:\/.*)?$/i,
+  /^https?:\/\/\*\*\.onrender\.com(?:\/.*)?$/i,
+  /^https?:\/\/\*\.up\.railway\.app(?:\/.*)?$/i,
+  /^https?:\/\/\*\*\.up\.railway\.app(?:\/.*)?$/i,
+  /^https?:\/\/\*\.fly\.dev(?:\/.*)?$/i,
+  /^https?:\/\/\*\*\.fly\.dev(?:\/.*)?$/i,
+  /^https?:\/\/\*\.amplifyapp\.com(?:\/.*)?$/i,
+  /^https?:\/\/\*\*\.amplifyapp\.com(?:\/.*)?$/i,
 ];
 
 function isExcessivelyPermissiveWildcard(url: string): boolean {

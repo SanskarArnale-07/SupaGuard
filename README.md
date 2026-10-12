@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18.0.0-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-98%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-121%20passed-brightgreen.svg)]()
 
 > **SupaGuard** is a local security preflight CLI for Supabase projects.
 > It inspects `supabase/config.toml` and SQL migration files (`supabase/migrations/*.sql`) prior to deployment to detect security-sensitive configurations, missing Row Level Security (RLS), exposed secrets, and overly permissive database access policies.
@@ -72,7 +72,7 @@ npm ci
 # Build the TypeScript project
 npm run build
 
-# Run the complete test suite (98 tests across 7 suites)
+# Run the complete test suite (121 tests across 7 suites)
 npm test
 
 # Verify package distribution tarball
