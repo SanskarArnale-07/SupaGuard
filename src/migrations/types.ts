@@ -65,6 +65,30 @@ export interface PolicyState {
   hasExplicitUsing?: boolean;
   /** Whether a WITH CHECK clause was explicitly defined in SQL */
   hasExplicitWithCheck?: boolean;
+  /** Whether the USING expression references auth.* or identity functions */
+  hasAuthCheckUsing?: boolean;
+  /** Whether the WITH CHECK expression references auth.* or identity functions */
+  hasAuthCheckWithCheck?: boolean;
+  /** Whether the USING expression enforces user-level row ownership (e.g. auth.uid() = user_id) */
+  hasOwnershipCheckUsing?: boolean;
+  /** Whether the WITH CHECK expression enforces user-level row ownership (e.g. auth.uid() = user_id) */
+  hasOwnershipCheckWithCheck?: boolean;
+  /** Specific table columns bound to auth identity for row ownership in USING expression (e.g. ['user_id']) */
+  ownershipColumnsUsing?: string[];
+  /** Specific table columns bound to auth identity for row ownership in WITH CHECK expression */
+  ownershipColumnsWithCheck?: string[];
+  /** Whether the USING expression enforces row ownership via an entity-correlated membership subquery */
+  hasEntityMembershipUsing?: boolean;
+  /** Whether the WITH CHECK expression enforces row ownership via an entity-correlated membership subquery */
+  hasEntityMembershipWithCheck?: boolean;
+  /** Whether the USING expression enforces a tenant boundary (e.g. tenant_id = (auth.jwt()->>'tenant_id')::uuid) */
+  hasTenantCheckUsing?: boolean;
+  /** Whether the WITH CHECK expression enforces a tenant boundary */
+  hasTenantCheckWithCheck?: boolean;
+  /** Whether the USING expression demonstrably narrows row accessibility */
+  isNarrowingUsing?: boolean;
+  /** Whether the WITH CHECK expression demonstrably narrows row accessibility */
+  isNarrowingWithCheck?: boolean;
   /** Location where this policy was created */
   createdIn: {
     file: string;

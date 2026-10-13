@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { analyzeConfig } from '../../src/analyzer/index.js';
 import { discoverMigrations, resolveMigrationsDir } from '../../src/migrations/discover.js';
-import { isUnrestrictedPredicate, offsetToLineAndColumn, parseMigrationSql } from '../../src/migrations/parser.js';
+import { isTenantColumnName, isUnrestrictedPredicate, isUserColumnName, offsetToLineAndColumn, parseMigrationSql } from '../../src/migrations/parser.js';
 import { buildMigrationDatabaseState } from '../../src/migrations/state.js';
 import type { MigrationFile } from '../../src/migrations/types.js';
 import { checkMissingRls } from '../../src/rules/migrations/missing-rls.js';
@@ -1377,6 +1377,2274 @@ describe('SQL Migration Security Scanner Suite', () => {
 
         const findings = checkMissingRls(state, { exposedSchemas: ['public'] });
         expect(findings).toHaveLength(0);
+      });
+    });
+
+    describe('Aggregate RLS Policy Interaction & Combination Analysis', () => {
+      it('detects when two permissive SELECT policies combine by OR and broaden access beyond ownership', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_doc.sql',
+            relativePath: 'supabase/migrations/01_doc.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Users see own documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Users see active documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleId).toBe('SEC-MIG-RLS-002');
+        expect(findings[0].ruleTitle).toBe(
+          'Permissive Policy Disjunction Broadens Access Beyond Ownership Boundary'
+        );
+        expect(findings[0].severity).toBe('low');
+        expect(findings[0].table).toBe('documents');
+        expect(findings[0].policyName).toBe('Users see active documents');
+        expect(findings[0].observedValue).toContain(
+          'combines via OR with ownership policy "Users see own documents"'
+        );
+      });
+
+      it('passes cleanly when two restrictive policies combine by AND without permissive disjunction', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_restrictive_and.sql',
+            relativePath: 'supabase/migrations/01_restrictive_and.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                tenant_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Tenant restriction"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING ((auth.jwt()->>'tenant_id')::uuid = tenant_id);
+              CREATE POLICY "Status restriction"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (status = 'active');
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('suppresses false positive world-readable findings when a permissive broad policy is narrowed by an applicable restrictive policy', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_narrowed_permissive.sql',
+            relativePath: 'supabase/migrations/01_narrowed_permissive.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                tenant_id uuid
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Open permissive"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (true);
+              CREATE POLICY "Tenant boundary"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING ((auth.jwt()->>'tenant_id')::uuid = tenant_id);
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('does not combine policies targeted to different roles (anon vs authenticated)', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_roles.sql',
+            relativePath: 'supabase/migrations/01_roles.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                is_public boolean
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Public read"
+                ON public.documents
+                FOR SELECT TO anon
+                USING (is_public = true);
+              CREATE POLICY "Owner read"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('does not combine policies targeted to different commands (SELECT vs UPDATE)', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_commands.sql',
+            relativePath: 'supabase/migrations/01_commands.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner read"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Owner update"
+                ON public.documents
+                FOR UPDATE TO authenticated
+                USING (auth.uid() = user_id)
+                WITH CHECK (auth.uid() = user_id);
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('detects disjunction widening when an ALL ownership policy interacts with a command-specific broad policy', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_all_interaction.sql',
+            relativePath: 'supabase/migrations/01_all_interaction.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner all"
+                ON public.documents
+                FOR ALL TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Active read"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleTitle).toBe(
+          'Permissive Policy Disjunction Broadens Access Beyond Ownership Boundary'
+        );
+        expect(findings[0].policyName).toBe('Active read');
+      });
+
+      it('evaluates cumulative state correctly when a broad policy is subsequently dropped in a later migration', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_create_both.sql',
+            relativePath: 'supabase/migrations/01_create_both.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner read"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Active read"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+            `,
+          },
+          {
+            filename: '02_drop_broad.sql',
+            relativePath: 'supabase/migrations/02_drop_broad.sql',
+            absolutePath: '/app/02.sql',
+            content: `
+              DROP POLICY "Active read" ON public.documents;
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('preserves info-severity advisory for legitimate standalone public-read access', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_public_blog.sql',
+            relativePath: 'supabase/migrations/01_public_blog.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.blog_posts (
+                id uuid,
+                title text
+              );
+              ALTER TABLE public.blog_posts ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Public read"
+                ON public.blog_posts
+                FOR SELECT TO anon
+                USING (true);
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('info');
+        expect(findings[0].ruleTitle).toBe('Public Read Access Allowed by RLS Policy');
+      });
+
+      it('ignores policies targeted strictly to service_role', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_sr_admin.sql',
+            relativePath: 'supabase/migrations/01_sr_admin.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.admin_logs (
+                id uuid,
+                log text
+              );
+              ALTER TABLE public.admin_logs ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Admin full"
+                ON public.admin_logs
+                FOR ALL TO service_role
+                USING (true)
+                WITH CHECK (true);
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('handles unknown or complex subquery expressions safely without false findings or crashes', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_subquery.sql',
+            relativePath: 'supabase/migrations/01_subquery.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.teams (
+                id uuid,
+                name text
+              );
+              ALTER TABLE public.teams ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Member read"
+                ON public.teams
+                FOR SELECT TO authenticated
+                USING (
+                  EXISTS (
+                    SELECT 1 FROM team_members
+                    WHERE team_members.team_id = teams.id
+                      AND team_members.user_id = auth.uid()
+                  )
+                );
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+    });
+
+    describe('Aggregate RLS Policy Analysis and Restrictive Suppression Hardening', () => {
+      it('1. classifies auth.uid() = user_id as a row-ownership predicate', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_ownership.sql',
+            relativePath: 'supabase/migrations/01_ownership.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (id uuid, user_id uuid);
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner select" ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.documents')?.policies.get('Owner select');
+        expect(pol?.hasOwnershipCheckUsing).toBe(true);
+        expect(pol?.hasTenantCheckUsing).toBe(false);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('2. classifies auth.uid() IS NOT NULL as a non-ownership predicate and detects disjunction widening', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_not_null.sql',
+            relativePath: 'supabase/migrations/01_not_null.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (id uuid, user_id uuid);
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner read" ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+              CREATE POLICY "Any auth read" ON public.documents FOR SELECT TO authenticated USING (auth.uid() IS NOT NULL);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.documents')?.policies.get('Any auth read');
+        expect(pol?.hasOwnershipCheckUsing).toBe(false);
+        expect(pol?.hasAuthCheckUsing).toBe(true);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleTitle).toBe(
+          'Permissive Policy Disjunction Broadens Access Beyond Ownership Boundary'
+        );
+        expect(findings[0].policyName).toBe('Any auth read');
+      });
+
+      it('3. classifies auth.uid() = auth.uid() as a tautology rather than row ownership', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_self_compare.sql',
+            relativePath: 'supabase/migrations/01_self_compare.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (id uuid, user_id uuid);
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner read" ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+              CREATE POLICY "Tautology read" ON public.documents FOR SELECT TO authenticated USING (auth.uid() = auth.uid());
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.documents')?.policies.get('Tautology read');
+        expect(pol?.hasOwnershipCheckUsing).toBe(false);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].policyName).toBe('Tautology read');
+      });
+
+      it('4. classifies ownership OR broad condition as broad, detecting disjunction', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_or_broad.sql',
+            relativePath: 'supabase/migrations/01_or_broad.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (id uuid, user_id uuid, status text);
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner read" ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+              CREATE POLICY "Owner or active" ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id OR status = 'active');
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.documents')?.policies.get('Owner or active');
+        expect(pol?.hasOwnershipCheckUsing).toBe(false);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].policyName).toBe('Owner or active');
+      });
+
+      it('5. preserves row-ownership classification when combined via Boolean AND with an additional filter', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_and_filter.sql',
+            relativePath: 'supabase/migrations/01_and_filter.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (id uuid, user_id uuid, status text);
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner active read" ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id AND status = 'active');
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.documents')?.policies.get('Owner active read');
+        expect(pol?.hasOwnershipCheckUsing).toBe(true);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('6. does not suppress disjunction findings when a restrictive policy uses auth.uid() IS NOT NULL', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_reproduce_scenario_3.sql',
+            relativePath: 'supabase/migrations/01_reproduce_scenario_3.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Users see own documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Users see active documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Require authenticated identity"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (auth.uid() IS NOT NULL);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleTitle).toBe(
+          'Permissive Policy Disjunction Broadens Access Beyond Ownership Boundary'
+        );
+        expect(findings[0].policyName).toBe('Users see active documents');
+        expect(findings[0].severity).toBe('low');
+      });
+
+      it('7. does not suppress disjunction findings when a restrictive policy contains OR true and does not flag restrictive policy as granting access', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_restrictive_or_true.sql',
+            relativePath: 'supabase/migrations/01_restrictive_or_true.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Users see own documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Users see active documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Tautological auth restrictive"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id OR true);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleTitle).toBe(
+          'Permissive Policy Disjunction Broadens Access Beyond Ownership Boundary'
+        );
+        expect(findings[0].policyName).toBe('Users see active documents');
+        expect(findings.some((f) => f.policyName === 'Tautological auth restrictive')).toBe(false);
+      });
+
+      it('8. reports disjunction widening with calibrated explanation when a tenant boundary is present', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_tenant_disjunction.sql',
+            relativePath: 'supabase/migrations/01_tenant_disjunction.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                tenant_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Users see own documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Users see active documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Tenant boundary"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (tenant_id = (auth.jwt()->>'tenant_id')::uuid);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].policyName).toBe('Users see active documents');
+        expect(findings[0].observedValue).toContain('(within tenant boundary enforced by "Tenant boundary")');
+        expect(findings[0].rationale).toContain('isolates records by tenant');
+      });
+
+      it('9. suppresses disjunction finding when an applicable restrictive policy genuinely enforces row ownership', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_restrictive_ownership.sql',
+            relativePath: 'supabase/migrations/01_restrictive_ownership.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Users see own documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Users see active documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Enforce ownership strictly"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('10. guarantees that a restrictive USING (true) policy cannot independently generate an access-granting finding', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_restrictive_true.sql',
+            relativePath: 'supabase/migrations/01_restrictive_true.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (id uuid);
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Restrictive true"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (true);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('11. handles legitimate public-read and service_role scenarios cleanly without false positives', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_legit.sql',
+            relativePath: 'supabase/migrations/01_legit.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.catalog (id uuid, is_public boolean);
+              ALTER TABLE public.catalog ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Public items"
+                ON public.catalog
+                FOR SELECT TO anon
+                USING (is_public = true);
+              CREATE POLICY "Service full"
+                ON public.catalog
+                FOR ALL TO service_role
+                USING (true)
+                WITH CHECK (true);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('12. respects role and command scoping so mismatching restrictive policies do not suppress disjunctions', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_mismatch.sql',
+            relativePath: 'supabase/migrations/01_mismatch.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Owner read"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Active read"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Restrictive update"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR UPDATE TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Restrictive anon"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO anon
+                USING (auth.uid() = user_id);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].policyName).toBe('Active read');
+      });
+
+      it('13. distinguishes tenant column auth.uid() = tenant_id from individual row ownership and preserves disjunction warning', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_tenant_column.sql',
+            relativePath: 'supabase/migrations/01_tenant_column.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                tenant_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Users see own documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Users see active documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Restrictive tenant match"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (auth.uid() = tenant_id);
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.documents')?.policies.get('Restrictive tenant match');
+        expect(pol?.hasOwnershipCheckUsing).toBe(false);
+        expect(pol?.hasTenantCheckUsing).toBe(false);
+
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleTitle).toBe(
+          'Permissive Policy Disjunction Broadens Access Beyond Ownership Boundary'
+        );
+        expect(findings[0].policyName).toBe('Users see active documents');
+        expect(findings[0].observedValue).not.toContain('(within tenant boundary');
+      });
+
+      it('14. recognizes uncorrelated subqueries as non-ownership and does not suppress disjunction warnings', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_uncorrelated.sql',
+            relativePath: 'supabase/migrations/01_uncorrelated.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.documents (
+                id uuid,
+                user_id uuid,
+                status text
+              );
+              ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Users see own documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (auth.uid() = user_id);
+              CREATE POLICY "Users see active documents"
+                ON public.documents
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Restrictive membership check"
+                ON public.documents
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (
+                  EXISTS (
+                    SELECT 1
+                    FROM public.memberships
+                    WHERE memberships.user_id = auth.uid()
+                  )
+                );
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.documents')?.policies.get('Restrictive membership check');
+        expect(pol?.hasOwnershipCheckUsing).toBe(false);
+
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleTitle).toBe(
+          'Permissive Policy Disjunction Broadens Access Beyond Ownership Boundary'
+        );
+        expect(findings[0].policyName).toBe('Users see active documents');
+      });
+
+      it('15. recognizes correlated subqueries that explicitly connect to the protected row and suppresses disjunction safely', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_correlated_suppress.sql',
+            relativePath: 'supabase/migrations/01_correlated_suppress.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE public.teams (
+                id uuid,
+                name text,
+                status text
+              );
+              ALTER TABLE public.teams ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Member read"
+                ON public.teams
+                FOR SELECT TO authenticated
+                USING (
+                  EXISTS (
+                    SELECT 1 FROM team_members
+                    WHERE team_members.team_id = teams.id
+                      AND team_members.user_id = auth.uid()
+                  )
+                );
+              CREATE POLICY "Active teams"
+                ON public.teams
+                FOR SELECT TO authenticated
+                USING (status <> 'archived');
+              CREATE POLICY "Enforce team membership"
+                ON public.teams
+                AS RESTRICTIVE
+                FOR SELECT TO authenticated
+                USING (
+                  EXISTS (
+                    SELECT 1 FROM team_members
+                    WHERE team_members.team_id = teams.id
+                      AND team_members.user_id = auth.uid()
+                  )
+                );
+            `,
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const pol = state.tables.get('public.teams')?.policies.get('Enforce team membership');
+        expect(pol?.hasOwnershipCheckUsing).toBe(true);
+
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      describe('Column classification and subquery correlation semantics', () => {
+        it('does not treat outer attribute filter (documents.status = active) in subquery as row ownership', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_status_subquery.sql',
+              relativePath: 'supabase/migrations/01_status_subquery.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Owner read"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active docs"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Status correlated subquery"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1
+                      FROM public.memberships
+                      WHERE memberships.user_id = auth.uid()
+                        AND documents.status = 'active'
+                    )
+                  );
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('Status correlated subquery');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+          expect(pol?.hasTenantCheckUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disjunctionFindings = findings.filter((f) =>
+            f.ruleTitle.includes('Permissive Policy Disjunction')
+          );
+          expect(disjunctionFindings).toHaveLength(1);
+          expect(disjunctionFindings[0].policyName).toBe('Active docs');
+        });
+
+        it('treats correctly correlated membership check (memberships.document_id = documents.id) as row ownership', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_entity_correlated.sql',
+              relativePath: 'supabase/migrations/01_entity_correlated.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Owner read"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active docs"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Entity membership check"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1
+                      FROM public.memberships
+                      WHERE memberships.user_id = auth.uid()
+                        AND memberships.document_id = documents.id
+                    )
+                  );
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('Entity membership check');
+          expect(pol?.hasOwnershipCheckUsing).toBe(true);
+          expect(pol?.hasTenantCheckUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disjunctionFindings = findings.filter((f) =>
+            f.ruleTitle.includes('Permissive Policy Disjunction')
+          );
+          expect(disjunctionFindings).toHaveLength(0);
+        });
+
+        it('treats team-correlated membership check as team/tenant boundary rather than individual row ownership', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_team_correlated.sql',
+              relativePath: 'supabase/migrations/01_team_correlated.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  team_id uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Owner read"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active docs"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Team membership check"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1
+                      FROM public.team_members
+                      WHERE team_members.user_id = auth.uid()
+                        AND team_members.team_id = documents.team_id
+                    )
+                  );
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('Team membership check');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+          expect(pol?.hasTenantCheckUsing).toBe(true);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disjunctionFindings = findings.filter((f) =>
+            f.ruleTitle.includes('Permissive Policy Disjunction')
+          );
+          expect(disjunctionFindings).toHaveLength(1);
+          expect(disjunctionFindings[0].observedValue).toContain('(within tenant boundary enforced by "Team membership check")');
+        });
+
+        it('does not treat uncorrelated membership subquery as row ownership or tenant boundary', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_uncorrelated.sql',
+              relativePath: 'supabase/migrations/01_uncorrelated.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Owner read"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active docs"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Uncorrelated check"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1
+                      FROM public.memberships
+                      WHERE memberships.user_id = auth.uid()
+                    )
+                  );
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('Uncorrelated check');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+          expect(pol?.hasTenantCheckUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disjunctionFindings = findings.filter((f) =>
+            f.ruleTitle.includes('Permissive Policy Disjunction')
+          );
+          expect(disjunctionFindings).toHaveLength(1);
+        });
+
+        it('does not treat audit column updated_by as row ownership and preserves disjunction warning', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_updated_by.sql',
+              relativePath: 'supabase/migrations/01_updated_by.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  updated_by uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Owner read"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active docs"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Updated by restriction"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = updated_by);
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('Updated by restriction');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disjunctionFindings = findings.filter((f) =>
+            f.ruleTitle.includes('Permissive Policy Disjunction')
+          );
+          expect(disjunctionFindings).toHaveLength(1);
+        });
+
+        it('classifies tenant columns (tenant_id, org_id, workspace_id, team_id) as tenant boundaries and not user ownership', () => {
+          expect(isTenantColumnName('tenant_id')).toBe(true);
+          expect(isTenantColumnName('org_id')).toBe(true);
+          expect(isTenantColumnName('workspace_id')).toBe(true);
+          expect(isTenantColumnName('team_id')).toBe(true);
+          expect(isTenantColumnName('user_id')).toBe(false);
+          expect(isTenantColumnName('created_by')).toBe(false);
+
+          expect(isUserColumnName('user_id')).toBe(true);
+          expect(isUserColumnName('created_by')).toBe(true);
+          expect(isUserColumnName('owner_id')).toBe(true);
+          expect(isUserColumnName('updated_by')).toBe(false);
+          expect(isUserColumnName('tenant_id')).toBe(false);
+          expect(isUserColumnName('org_id')).toBe(false);
+          expect(isUserColumnName('workspace_id')).toBe(false);
+          expect(isUserColumnName('sub')).toBe(false);
+          expect(isUserColumnName('member_id')).toBe(false);
+        });
+
+        it('CASE 1: treats auth.uid() = tenant_id as uncertain identity comparison and does not describe as validated tenant isolation', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_case1.sql',
+              relativePath: 'supabase/migrations/01_case1.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, user_id uuid, tenant_id uuid, status text);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY p_own ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+                CREATE POLICY p_broad ON public.documents FOR SELECT TO authenticated USING (status = 'active');
+                CREATE POLICY r ON public.documents AS RESTRICTIVE FOR SELECT TO authenticated USING (auth.uid() = tenant_id);
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('r');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+          expect(pol?.hasTenantCheckUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].observedValue).not.toContain('(within tenant boundary');
+          expect(disj[0].rationale).not.toContain('isolates records by tenant');
+        });
+
+        it('CASE 2: recognizes (auth.jwt()->>\'tenant_id\')::uuid = tenant_id as a validated tenant-claim boundary', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_case2.sql',
+              relativePath: 'supabase/migrations/01_case2.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, user_id uuid, tenant_id uuid, status text);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY p_own ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+                CREATE POLICY p_broad ON public.documents FOR SELECT TO authenticated USING (status = 'active');
+                CREATE POLICY r ON public.documents AS RESTRICTIVE FOR SELECT TO authenticated USING ((auth.jwt()->>'tenant_id')::uuid = tenant_id);
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('r');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+          expect(pol?.hasTenantCheckUsing).toBe(true);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].observedValue).toContain('(within tenant boundary enforced by "r")');
+          expect(disj[0].rationale).toContain('isolates records by tenant');
+        });
+
+        it('CASE 3: does not classify auth.uid() = team_id as a validated team boundary solely because of column name', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_case3.sql',
+              relativePath: 'supabase/migrations/01_case3.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, user_id uuid, team_id uuid, status text);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY p_own ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+                CREATE POLICY p_broad ON public.documents FOR SELECT TO authenticated USING (status = 'active');
+                CREATE POLICY r ON public.documents AS RESTRICTIVE FOR SELECT TO authenticated USING (auth.uid() = team_id);
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('r');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+          expect(pol?.hasTenantCheckUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].observedValue).not.toContain('(within tenant boundary');
+          expect(disj[0].rationale).not.toContain('isolates records by tenant');
+        });
+
+        it('CASE 4: distinguishes (auth.jwt()->>\'team_id\')::uuid = team_id from CASE 3 by recognizing team claim', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_case4.sql',
+              relativePath: 'supabase/migrations/01_case4.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, user_id uuid, team_id uuid, status text);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY p_own ON public.documents FOR SELECT TO authenticated USING (auth.uid() = user_id);
+                CREATE POLICY p_broad ON public.documents FOR SELECT TO authenticated USING (status = 'active');
+                CREATE POLICY r ON public.documents AS RESTRICTIVE FOR SELECT TO authenticated USING ((auth.jwt()->>'team_id')::uuid = team_id);
+              `,
+            },
+          ];
+          const state = await buildMigrationDatabaseState(migrations);
+          const pol = state.tables.get('public.documents')?.policies.get('r');
+          expect(pol?.hasOwnershipCheckUsing).toBe(false);
+          expect(pol?.hasTenantCheckUsing).toBe(true);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].observedValue).toContain('(within tenant boundary enforced by "r")');
+        });
+      });
+
+      describe('Ownership boundary precision and column distinction (Test A & Test B)', () => {
+        it('TEST A: matching ownership boundary (auth.uid() = user_id) mitigates disjunction and does not cause false warning', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_test_a.sql',
+              relativePath: 'supabase/migrations/01_test_a.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Users see own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Users see active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Enforce ownership strictly"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pOwner = state.tables.get('public.documents')?.policies.get('Users see own documents');
+          const pRestr = state.tables.get('public.documents')?.policies.get('Enforce ownership strictly');
+
+          expect(pOwner?.hasOwnershipCheckUsing).toBe(true);
+          expect(pOwner?.ownershipColumnsUsing).toEqual(['user_id']);
+          expect(pRestr?.hasOwnershipCheckUsing).toBe(true);
+          expect(pRestr?.ownershipColumnsUsing).toEqual(['user_id']);
+
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('TEST B: mismatching ownership column (auth.uid() = created_by) does NOT suppress disjunction warning', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_test_b.sql',
+              relativePath: 'supabase/migrations/01_test_b.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  created_by uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Users see own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Users see active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Enforce created_by"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = created_by);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pOwner = state.tables.get('public.documents')?.policies.get('Users see own documents');
+          const pRestr = state.tables.get('public.documents')?.policies.get('Enforce created_by');
+
+          // Verify representation retains distinct identity-bound columns
+          expect(pOwner?.ownershipColumnsUsing).toEqual(['user_id']);
+          expect(pRestr?.ownershipColumnsUsing).toEqual(['created_by']);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Users see active documents');
+          expect(disj[0].observedValue).toContain('(unmitigated by restrictive policy "Enforce created_by" on column "created_by")');
+          expect(disj[0].rationale).toContain('it does not verify "user_id" as enforced by policy "Users see own documents"');
+        });
+
+        it('does not assume owner_id and author_id establish the same boundary (owner_id permissive, author_id restrictive)', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_owner_author_mismatch.sql',
+              relativePath: 'supabase/migrations/01_owner_author_mismatch.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.articles (
+                  id uuid,
+                  owner_id uuid,
+                  author_id uuid,
+                  status text
+                );
+                ALTER TABLE public.articles ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Owner read"
+                  ON public.articles
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = owner_id);
+                CREATE POLICY "Active articles"
+                  ON public.articles
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Author restrictive"
+                  ON public.articles
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = author_id);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active articles');
+          expect(disj[0].observedValue).toContain('(unmitigated by restrictive policy "Author restrictive" on column "author_id")');
+          expect(disj[0].rationale).toContain('it does not verify "owner_id" as enforced by policy "Owner read"');
+        });
+
+        it('does not assume user_id and owner_id establish the same boundary (user_id permissive, owner_id restrictive)', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_user_owner_mismatch.sql',
+              relativePath: 'supabase/migrations/01_user_owner_mismatch.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.items (
+                  id uuid,
+                  user_id uuid,
+                  owner_id uuid,
+                  status text
+                );
+                ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "User read"
+                  ON public.items
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active items"
+                  ON public.items
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Owner restrictive"
+                  ON public.items
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = owner_id);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active items');
+          expect(disj[0].observedValue).toContain('(unmitigated by restrictive policy "Owner restrictive" on column "owner_id")');
+        });
+
+        it('suppresses disjunction warning when matching alternative ownership columns (created_by on both)', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_created_by_match.sql',
+              relativePath: 'supabase/migrations/01_created_by_match.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.posts (
+                  id uuid,
+                  created_by uuid,
+                  status text
+                );
+                ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Creator read"
+                  ON public.posts
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = created_by);
+                CREATE POLICY "Active posts"
+                  ON public.posts
+                  FOR SELECT TO authenticated
+                  USING (status = 'published');
+                CREATE POLICY "Creator restrictive"
+                  ON public.posts
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = created_by);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('suppresses disjunction warning when matching alternative ownership columns (owner_id on both)', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_owner_id_match.sql',
+              relativePath: 'supabase/migrations/01_owner_id_match.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.assets (
+                  id uuid,
+                  owner_id uuid,
+                  status text
+                );
+                ALTER TABLE public.assets ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Owner read"
+                  ON public.assets
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = owner_id);
+                CREATE POLICY "Active assets"
+                  ON public.assets
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Owner restrictive"
+                  ON public.assets
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = owner_id);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('suppresses disjunction warning when matching alternative ownership columns (author_id on both)', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_author_id_match.sql',
+              relativePath: 'supabase/migrations/01_author_id_match.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.notes (
+                  id uuid,
+                  author_id uuid,
+                  status text
+                );
+                ALTER TABLE public.notes ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Author read"
+                  ON public.notes
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = author_id);
+                CREATE POLICY "Active notes"
+                  ON public.notes
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Author restrictive"
+                  ON public.notes
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = author_id);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('suppresses disjunction warning when restrictive policy compound condition includes the owner column', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_compound_restrictive.sql',
+              relativePath: 'supabase/migrations/01_compound_restrictive.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  created_by uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Users see own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Users see active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Compound restrictive"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id AND auth.uid() = created_by);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pRestr = state.tables.get('public.documents')?.policies.get('Compound restrictive');
+          expect(pRestr?.ownershipColumnsUsing).toContain('user_id');
+          expect(pRestr?.ownershipColumnsUsing).toContain('created_by');
+
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('TASK 3: preserves column information across INSERT WITH CHECK and UPDATE policies', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_write_policies.sql',
+              relativePath: 'supabase/migrations/01_write_policies.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.records (
+                  id uuid,
+                  user_id uuid,
+                  owner_id uuid
+                );
+                ALTER TABLE public.records ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Insert own record"
+                  ON public.records
+                  FOR INSERT TO authenticated
+                  WITH CHECK (auth.uid() = user_id);
+                CREATE POLICY "Update owner record"
+                  ON public.records
+                  FOR UPDATE TO authenticated
+                  USING (auth.uid() = owner_id);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pInsert = state.tables.get('public.records')?.policies.get('Insert own record');
+          const pUpdate = state.tables.get('public.records')?.policies.get('Update owner record');
+
+          expect(pInsert?.hasOwnershipCheckWithCheck).toBe(true);
+          expect(pInsert?.ownershipColumnsWithCheck).toEqual(['user_id']);
+          expect(pUpdate?.hasOwnershipCheckUsing).toBe(true);
+          expect(pUpdate?.ownershipColumnsUsing).toEqual(['owner_id']);
+          // UPDATE omitted WITH CHECK inherits USING ownership columns
+          expect(pUpdate?.hasOwnershipCheckWithCheck).toBe(true);
+          expect(pUpdate?.ownershipColumnsWithCheck).toEqual(['owner_id']);
+        });
+      });
+
+      describe('Disjunctive and Ambiguous Restrictive Predicate Analysis (Tasks 1 & 2)', () => {
+        it('TASK 1 & TASK 2.4: disjunctive restrictive policy (auth.uid() = user_id OR auth.uid() = created_by) does NOT suppress disjunction finding', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_task1_reproduce.sql',
+              relativePath: 'supabase/migrations/01_task1_reproduce.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  created_by uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Owner or creator"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    auth.uid() = user_id
+                    OR auth.uid() = created_by
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pRestr = state.tables.get('public.documents')?.policies.get('Owner or creator');
+          // An OR expression across distinct columns produces an empty common ownership columns list
+          expect(pRestr?.hasOwnershipCheckUsing).toBe(true);
+          expect(pRestr?.ownershipColumnsUsing).toEqual([]);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          // Must NOT suppress finding because the effective condition leaks active rows to non-owners
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active documents');
+          expect(disj[0].observedValue).toContain('(unmitigated by restrictive policy "Owner or creator")');
+          expect(disj[0].rationale).toContain('its disjunctive or unconfirmed condition does not guarantee "user_id" as enforced by policy "Own documents"');
+        });
+
+        it('TASK 2.1: restrictive auth.uid() = user_id suppresses disjunction finding', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_task2_1_matching.sql',
+              relativePath: 'supabase/migrations/01_task2_1_matching.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Owner restrictive"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('TASK 2.2: restrictive auth.uid() = created_by does NOT suppress disjunction finding', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_task2_2_mismatch.sql',
+              relativePath: 'supabase/migrations/01_task2_2_mismatch.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  created_by uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Creator restrictive"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = created_by);
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active documents');
+          expect(disj[0].observedValue).toContain('(unmitigated by restrictive policy "Creator restrictive" on column "created_by")');
+        });
+
+        it('TASK 2.3: restrictive auth.uid() = user_id AND auth.uid() = created_by suppresses disjunction finding', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_task2_3_conjunctive.sql',
+              relativePath: 'supabase/migrations/01_task2_3_conjunctive.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  created_by uuid,
+                  status text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Owner and creator"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    auth.uid() = user_id
+                    AND auth.uid() = created_by
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pRestr = state.tables.get('public.documents')?.policies.get('Owner and creator');
+          expect(pRestr?.ownershipColumnsUsing).toContain('user_id');
+          expect(pRestr?.ownershipColumnsUsing).toContain('created_by');
+
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('TASK 2.5: broad/unclassifiable restrictive predicate does NOT suppress disjunction finding', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_task2_5_broad.sql',
+              relativePath: 'supabase/migrations/01_task2_5_broad.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  status text,
+                  category text
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Category filter"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (category = 'internal');
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active documents');
+        });
+
+        it('TASK 2.6: legitimate correlated membership subquery suppresses disjunction finding', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_task2_6_membership.sql',
+              relativePath: 'supabase/migrations/01_task2_6_membership.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  user_id uuid,
+                  status text
+                );
+                CREATE TABLE public.memberships (
+                  document_id uuid,
+                  user_id uuid
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Own documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Member restrictive"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pRestr = state.tables.get('public.documents')?.policies.get('Member restrictive');
+          expect(pRestr?.hasEntityMembershipUsing).toBe(true);
+
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('TASK 2.6b: entity-correlated membership permissive policy mitigated by matching membership restrictive', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_task2_6b_membership_permissive.sql',
+              relativePath: 'supabase/migrations/01_task2_6b_membership_permissive.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (
+                  id uuid,
+                  status text
+                );
+                CREATE TABLE public.memberships (
+                  document_id uuid,
+                  user_id uuid
+                );
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Member access"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active documents"
+                  ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Member restrictive"
+                  ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pMember = state.tables.get('public.documents')?.policies.get('Member access');
+          const pRestr = state.tables.get('public.documents')?.policies.get('Member restrictive');
+          expect(pMember?.hasEntityMembershipUsing).toBe(true);
+          expect(pRestr?.hasEntityMembershipUsing).toBe(true);
+
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+      });
+
+      describe('Targeted Entity-Membership Suppression Verification (Tests A, B, C, D)', () => {
+        it('TEST A: valid entity-membership restriction suppresses disjunction warning (SELECT)', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_test_a_select.sql',
+              relativePath: 'supabase/migrations/01_test_a_select.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Members see documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Strict membership" ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('TEST B: tautological OR (EXISTS (...) OR true) does NOT suppress disjunction warning', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_test_b_tautology.sql',
+              relativePath: 'supabase/migrations/01_test_b_tautology.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Members see documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Tautological membership" ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    OR true
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pRestr = state.tables.get('public.documents')?.policies.get('Tautological membership');
+          expect(pRestr?.isUnrestrictedUsing).toBe(true);
+          expect(pRestr?.hasEntityMembershipUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active documents');
+        });
+
+        it('TEST C: broad OR branch (EXISTS (...) OR status = active) does NOT suppress disjunction warning', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_test_c_broad_or.sql',
+              relativePath: 'supabase/migrations/01_test_c_broad_or.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Members see documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Broad membership or status" ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    OR status = 'active'
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pRestr = state.tables.get('public.documents')?.policies.get('Broad membership or status');
+          // Disjunctive branch with status column must not be classified as strict entity membership
+          expect(pRestr?.hasEntityMembershipUsing).toBe(false);
+          expect(pRestr?.hasOwnershipCheckUsing).toBe(false);
+
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active documents');
+        });
+
+        it('TEST C: broad OR branch alongside permissive user ownership does NOT suppress disjunction warning', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_test_c_ownership_broad_or.sql',
+              relativePath: 'supabase/migrations/01_test_c_ownership_broad_or.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, user_id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Own documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (auth.uid() = user_id);
+                CREATE POLICY "Active documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Broad membership or status" ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    OR status = 'active'
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const findings = checkSuspiciousPolicies(state);
+          const disj = findings.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disj).toHaveLength(1);
+          expect(disj[0].policyName).toBe('Active documents');
+        });
+
+        it('TEST D: required membership with additional filtering (EXISTS (...) AND status = active) preserves restriction', async () => {
+          const migrations: MigrationFile[] = [
+            {
+              filename: '01_test_d_conjunctive.sql',
+              relativePath: 'supabase/migrations/01_test_d_conjunctive.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Members see documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active documents" ON public.documents
+                  FOR SELECT TO authenticated
+                  USING (status = 'active');
+                CREATE POLICY "Active member documents" ON public.documents
+                  AS RESTRICTIVE
+                  FOR SELECT TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    AND status = 'active'
+                  );
+              `,
+            },
+          ];
+
+          const state = await buildMigrationDatabaseState(migrations);
+          const pRestr = state.tables.get('public.documents')?.policies.get('Active member documents');
+          expect(pRestr?.hasEntityMembershipUsing).toBe(true);
+
+          const findings = checkSuspiciousPolicies(state);
+          expect(findings).toHaveLength(0);
+        });
+
+        it('WITH CHECK: Test B and Test C do not suppress INSERT disjunction, while Test A and Test D suppress it', async () => {
+          // Verify Test C with INSERT WITH CHECK
+          const migrationsBroad: MigrationFile[] = [
+            {
+              filename: '01_insert_test_c.sql',
+              relativePath: 'supabase/migrations/01_insert_test_c.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Member insert" ON public.documents
+                  FOR INSERT TO authenticated
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active insert" ON public.documents
+                  FOR INSERT TO authenticated
+                  WITH CHECK (status = 'active');
+                CREATE POLICY "Broad insert restrictive" ON public.documents
+                  AS RESTRICTIVE
+                  FOR INSERT TO authenticated
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    OR status = 'active'
+                  );
+              `,
+            },
+          ];
+
+          const stateBroad = await buildMigrationDatabaseState(migrationsBroad);
+          const findingsBroad = checkSuspiciousPolicies(stateBroad);
+          const disjBroad = findingsBroad.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disjBroad).toHaveLength(1);
+          expect(disjBroad[0].policyName).toBe('Active insert');
+
+          // Verify Test D with INSERT WITH CHECK
+          const migrationsConjunctive: MigrationFile[] = [
+            {
+              filename: '01_insert_test_d.sql',
+              relativePath: 'supabase/migrations/01_insert_test_d.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Member insert" ON public.documents
+                  FOR INSERT TO authenticated
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active insert" ON public.documents
+                  FOR INSERT TO authenticated
+                  WITH CHECK (status = 'active');
+                CREATE POLICY "Filtered member insert restrictive" ON public.documents
+                  AS RESTRICTIVE
+                  FOR INSERT TO authenticated
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    AND status = 'active'
+                  );
+              `,
+            },
+          ];
+
+          const stateConjunctive = await buildMigrationDatabaseState(migrationsConjunctive);
+          const findingsConjunctive = checkSuspiciousPolicies(stateConjunctive);
+          expect(findingsConjunctive).toHaveLength(0);
+        });
+
+        it('UPDATE WITH CHECK & USING: Test C does not suppress UPDATE disjunction, while Test D suppresses it', async () => {
+          // Verify Test C with UPDATE
+          const migrationsBroad: MigrationFile[] = [
+            {
+              filename: '01_update_test_c.sql',
+              relativePath: 'supabase/migrations/01_update_test_c.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Member update" ON public.documents
+                  FOR UPDATE TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  )
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active update" ON public.documents
+                  FOR UPDATE TO authenticated
+                  USING (status = 'active')
+                  WITH CHECK (status = 'active');
+                CREATE POLICY "Broad update restrictive" ON public.documents
+                  AS RESTRICTIVE
+                  FOR UPDATE TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    OR status = 'active'
+                  )
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    OR status = 'active'
+                  );
+              `,
+            },
+          ];
+
+          const stateBroad = await buildMigrationDatabaseState(migrationsBroad);
+          const findingsBroad = checkSuspiciousPolicies(stateBroad);
+          const disjBroad = findingsBroad.filter((f) => f.ruleTitle.includes('Permissive Policy Disjunction'));
+          expect(disjBroad).toHaveLength(1);
+          expect(disjBroad[0].policyName).toBe('Active update');
+
+          // Verify Test D with UPDATE
+          const migrationsConjunctive: MigrationFile[] = [
+            {
+              filename: '01_update_test_d.sql',
+              relativePath: 'supabase/migrations/01_update_test_d.sql',
+              absolutePath: '/app/01.sql',
+              content: `
+                CREATE TABLE public.documents (id uuid, status text);
+                CREATE TABLE public.memberships (document_id uuid, user_id uuid);
+                ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+                CREATE POLICY "Member update" ON public.documents
+                  FOR UPDATE TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  )
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                  );
+                CREATE POLICY "Active update" ON public.documents
+                  FOR UPDATE TO authenticated
+                  USING (status = 'active')
+                  WITH CHECK (status = 'active');
+                CREATE POLICY "Filtered member update restrictive" ON public.documents
+                  AS RESTRICTIVE
+                  FOR UPDATE TO authenticated
+                  USING (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    AND status = 'active'
+                  )
+                  WITH CHECK (
+                    EXISTS (
+                      SELECT 1 FROM public.memberships
+                      WHERE memberships.document_id = documents.id
+                        AND memberships.user_id = auth.uid()
+                    )
+                    AND status = 'active'
+                  );
+              `,
+            },
+          ];
+
+          const stateConjunctive = await buildMigrationDatabaseState(migrationsConjunctive);
+          const findingsConjunctive = checkSuspiciousPolicies(stateConjunctive);
+          expect(findingsConjunctive).toHaveLength(0);
+        });
       });
     });
   });

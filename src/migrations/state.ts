@@ -1,4 +1,13 @@
-import { isUnrestrictedPredicate, parseMigrationSql } from './parser.js';
+import {
+  extractRowOwnershipColumns,
+  hasAuthReference,
+  hasEntityMembershipSubquery,
+  hasRowOwnershipPredicate,
+  hasTenantBoundaryPredicate,
+  isNarrowingRestrictivePredicate,
+  isUnrestrictedPredicate,
+  parseMigrationSql,
+} from './parser.js';
 import type {
   MigrationDatabaseState,
   MigrationFile,
@@ -171,7 +180,7 @@ export async function buildMigrationDatabaseState(
 
         const rawCmd = (createPol.cmd_name || 'all').toLowerCase() as PolicyCommand;
         const roles = extractRoles(createPol.roles);
-        const permissive = createPol.permissive !== false;
+        const permissive = createPol.permissive === true;
         const hasExplicitUsing = createPol.qual !== undefined;
         const hasExplicitWithCheck = createPol.with_check !== undefined;
 
@@ -207,6 +216,88 @@ export async function buildMigrationDatabaseState(
             : isUnrestrictedUsing;
         }
 
+        const hasAuthCheckUsing = hasExplicitUsing ? hasAuthReference(createPol.qual) : false;
+        let hasAuthCheckWithCheck = false;
+        if (rawCmd === 'insert') {
+          hasAuthCheckWithCheck = hasExplicitWithCheck
+            ? hasAuthReference(createPol.with_check)
+            : false;
+        } else if (rawCmd === 'update' || rawCmd === 'all') {
+          hasAuthCheckWithCheck = hasExplicitWithCheck
+            ? hasAuthReference(createPol.with_check)
+            : hasAuthCheckUsing;
+        }
+
+        const hasOwnershipCheckUsing = hasExplicitUsing
+          ? hasRowOwnershipPredicate(createPol.qual, tableName)
+          : false;
+        let hasOwnershipCheckWithCheck = false;
+        if (rawCmd === 'insert') {
+          hasOwnershipCheckWithCheck = hasExplicitWithCheck
+            ? hasRowOwnershipPredicate(createPol.with_check, tableName)
+            : false;
+        } else if (rawCmd === 'update' || rawCmd === 'all') {
+          hasOwnershipCheckWithCheck = hasExplicitWithCheck
+            ? hasRowOwnershipPredicate(createPol.with_check, tableName)
+            : hasOwnershipCheckUsing;
+        }
+
+        const ownershipColumnsUsing = hasExplicitUsing
+          ? extractRowOwnershipColumns(createPol.qual, tableName)
+          : [];
+        let ownershipColumnsWithCheck: string[] = [];
+        if (rawCmd === 'insert') {
+          ownershipColumnsWithCheck = hasExplicitWithCheck
+            ? extractRowOwnershipColumns(createPol.with_check, tableName)
+            : [];
+        } else if (rawCmd === 'update' || rawCmd === 'all') {
+          ownershipColumnsWithCheck = hasExplicitWithCheck
+            ? extractRowOwnershipColumns(createPol.with_check, tableName)
+            : ownershipColumnsUsing;
+        }
+
+        const hasEntityMembershipUsing = hasExplicitUsing
+          ? hasEntityMembershipSubquery(createPol.qual, tableName)
+          : false;
+        let hasEntityMembershipWithCheck = false;
+        if (rawCmd === 'insert') {
+          hasEntityMembershipWithCheck = hasExplicitWithCheck
+            ? hasEntityMembershipSubquery(createPol.with_check, tableName)
+            : false;
+        } else if (rawCmd === 'update' || rawCmd === 'all') {
+          hasEntityMembershipWithCheck = hasExplicitWithCheck
+            ? hasEntityMembershipSubquery(createPol.with_check, tableName)
+            : hasEntityMembershipUsing;
+        }
+
+        const hasTenantCheckUsing = hasExplicitUsing
+          ? hasTenantBoundaryPredicate(createPol.qual, tableName)
+          : false;
+        let hasTenantCheckWithCheck = false;
+        if (rawCmd === 'insert') {
+          hasTenantCheckWithCheck = hasExplicitWithCheck
+            ? hasTenantBoundaryPredicate(createPol.with_check, tableName)
+            : false;
+        } else if (rawCmd === 'update' || rawCmd === 'all') {
+          hasTenantCheckWithCheck = hasExplicitWithCheck
+            ? hasTenantBoundaryPredicate(createPol.with_check, tableName)
+            : hasTenantCheckUsing;
+        }
+
+        const isNarrowingUsing = hasExplicitUsing
+          ? isNarrowingRestrictivePredicate(createPol.qual, tableName)
+          : false;
+        let isNarrowingWithCheck = false;
+        if (rawCmd === 'insert') {
+          isNarrowingWithCheck = hasExplicitWithCheck
+            ? isNarrowingRestrictivePredicate(createPol.with_check, tableName)
+            : false;
+        } else if (rawCmd === 'update' || rawCmd === 'all') {
+          isNarrowingWithCheck = hasExplicitWithCheck
+            ? isNarrowingRestrictivePredicate(createPol.with_check, tableName)
+            : isNarrowingUsing;
+        }
+
         const policyState: PolicyState = {
           name: policyName,
           schema,
@@ -218,6 +309,18 @@ export async function buildMigrationDatabaseState(
           isUnrestrictedWithCheck,
           hasExplicitUsing,
           hasExplicitWithCheck,
+          hasAuthCheckUsing,
+          hasAuthCheckWithCheck,
+          hasOwnershipCheckUsing,
+          hasOwnershipCheckWithCheck,
+          ownershipColumnsUsing,
+          ownershipColumnsWithCheck,
+          hasEntityMembershipUsing,
+          hasEntityMembershipWithCheck,
+          hasTenantCheckUsing,
+          hasTenantCheckWithCheck,
+          isNarrowingUsing,
+          isNarrowingWithCheck,
           createdIn: { file, line },
           dropped: false,
         };
@@ -245,10 +348,22 @@ export async function buildMigrationDatabaseState(
           if (alterPol.qual !== undefined) {
             existingPolicy.isUnrestrictedUsing = isUnrestrictedPredicate(alterPol.qual);
             existingPolicy.hasExplicitUsing = true;
+            existingPolicy.hasAuthCheckUsing = hasAuthReference(alterPol.qual);
+            existingPolicy.hasOwnershipCheckUsing = hasRowOwnershipPredicate(alterPol.qual, tableName);
+            existingPolicy.ownershipColumnsUsing = extractRowOwnershipColumns(alterPol.qual, tableName);
+            existingPolicy.hasEntityMembershipUsing = hasEntityMembershipSubquery(alterPol.qual, tableName);
+            existingPolicy.hasTenantCheckUsing = hasTenantBoundaryPredicate(alterPol.qual, tableName);
+            existingPolicy.isNarrowingUsing = isNarrowingRestrictivePredicate(alterPol.qual, tableName);
           }
           if (alterPol.with_check !== undefined) {
             existingPolicy.isUnrestrictedWithCheck = isUnrestrictedPredicate(alterPol.with_check);
             existingPolicy.hasExplicitWithCheck = true;
+            existingPolicy.hasAuthCheckWithCheck = hasAuthReference(alterPol.with_check);
+            existingPolicy.hasOwnershipCheckWithCheck = hasRowOwnershipPredicate(alterPol.with_check, tableName);
+            existingPolicy.ownershipColumnsWithCheck = extractRowOwnershipColumns(alterPol.with_check, tableName);
+            existingPolicy.hasEntityMembershipWithCheck = hasEntityMembershipSubquery(alterPol.with_check, tableName);
+            existingPolicy.hasTenantCheckWithCheck = hasTenantBoundaryPredicate(alterPol.with_check, tableName);
+            existingPolicy.isNarrowingWithCheck = isNarrowingRestrictivePredicate(alterPol.with_check, tableName);
           }
           existingPolicy.modifiedIn = { file, line };
         }
