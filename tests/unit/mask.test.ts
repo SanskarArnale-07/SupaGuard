@@ -45,6 +45,10 @@ describe('Masking and Sanitization Utilities', () => {
     expect(isSensitivePath('custom.keys.private_key')).toBe(true);
     expect(isSensitivePath('custom.keys.privateKey')).toBe(true);
     expect(isSensitivePath('custom.auth.password')).toBe(true);
+    expect(isSensitivePath('auth.bearer_token')).toBe(true);
+    expect(isSensitivePath('custom.slack.bot_token')).toBe(true);
+    expect(isSensitivePath('vault.encryption_key')).toBe(true);
+    expect(isSensitivePath('jwt.signing_key')).toBe(true);
 
     // Non-sensitive paths
     expect(isSensitivePath('auth.site_url')).toBe(false);
@@ -170,6 +174,29 @@ Invalid TOML document: expected newline after value
       const text = 'Notice: secret = "env(MY_KEY)" followed by syntax error';
       const sanitized = sanitizeText(text);
       expect(sanitized).toContain('secret = "env(MY_KEY)"');
+    });
+
+    it('redacts tokens and cryptographic keys in error snippets', () => {
+      const snippet =
+        'Error near encryption_key = "raw_enc_key_123" and bot_token = "xoxb-123456" and bearer_token = "secret_bearer_token" and signing_key = "raw_signing_key"';
+      const sanitized = sanitizeText(snippet);
+      expect(sanitized).not.toContain('raw_enc_key_123');
+      expect(sanitized).not.toContain('xoxb-123456');
+      expect(sanitized).not.toContain('secret_bearer_token');
+      expect(sanitized).not.toContain('raw_signing_key');
+      expect(sanitized).toContain('encryption_key = "[REDACTED_SECRET]"');
+      expect(sanitized).toContain('bot_token = "[REDACTED_SECRET]"');
+      expect(sanitized).toContain('bearer_token = "[REDACTED_SECRET]"');
+      expect(sanitized).toContain('signing_key = "[REDACTED_SECRET]"');
+    });
+
+    it('redacts unquoted assignments for sensitive keys in parser diagnostics', () => {
+      const snippet = 'Diagnostic: bearer_token = secret_raw_token and signing_key = raw_signing_val';
+      const sanitized = sanitizeText(snippet);
+      expect(sanitized).not.toContain('secret_raw_token');
+      expect(sanitized).not.toContain('raw_signing_val');
+      expect(sanitized).toContain('bearer_token = [REDACTED_SECRET]');
+      expect(sanitized).toContain('signing_key = [REDACTED_SECRET]');
     });
   });
 });

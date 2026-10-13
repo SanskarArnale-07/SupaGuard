@@ -7,6 +7,10 @@ const SENSITIVE_PATH_PATTERNS = [
   /(^|\.)(?:.*_)?api_?keys?$/i,
   /(^|\.)(?:.*_)?access_?keys?$/i,
   /(^|\.)(?:.*_)?auth_?tokens?$/i,
+  /(^|\.)(?:.*_)?bearer_?tokens?$/i,
+  /(^|\.)(?:.*_)?bot_?tokens?$/i,
+  /(^|\.)(?:.*_)?encryption_?keys?$/i,
+  /(^|\.)(?:.*_)?signing_?keys?$/i,
   /(^|\.)(?:.*_)?passwords?$/i,
   /(^|\.)pass$/i,
   /(^|\.)(?:.*_)?service_?role_?key$/i,
@@ -158,7 +162,7 @@ export function sanitizeText(text: string): string {
   // Pattern matching: key = "secret_value" or key: 'secret_value'
   // Where key is a known sensitive credential name
   const sensitiveAssignRegex =
-    /(\b(?:secrets?|pass|password|api_?key|access_?key|auth_?token|secret_?key|private_?key|service_?role_?key|jwt_?secret)\s*[:=]\s*)(["'])(?:(?!\2).)*\2/gi;
+    /(\b(?:secrets?|pass|password|api_?key|access_?key|auth_?token|bearer_?token|bot_?token|encryption_?key|signing_?key|secret_?key|private_?key|service_?role_?key|jwt_?secret)\s*[:=]\s*)(["'])(?:(?!\2).)*\2/gi;
 
   let sanitized = text.replace(sensitiveAssignRegex, (match, prefix, quote) => {
     // Check if the matched value was an env() reference
@@ -170,7 +174,7 @@ export function sanitizeText(text: string): string {
 
   // Also sanitize unquoted literal assignments if present: key = value
   const unquotedAssignRegex =
-    /(\b(?:secrets?|pass|password|api_?key|access_?key|auth_?token|secret_?key|private_?key|service_?role_?key|jwt_?secret)\s*=\s*)([^\s\r\n,"'#]+)/gi;
+    /(\b(?:secrets?|pass|password|api_?key|access_?key|auth_?token|bearer_?token|bot_?token|encryption_?key|signing_?key|secret_?key|private_?key|service_?role_?key|jwt_?secret)\s*=\s*)([^\s\r\n,"'#]+)/gi;
 
   sanitized = sanitized.replace(unquotedAssignRegex, (match, prefix, rawVal) => {
     if (/^env\(.*\)$/i.test(rawVal.trim())) {

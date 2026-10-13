@@ -80,6 +80,37 @@ describe('Security Rules Registry & Verification', () => {
       }
     });
 
+    it('detects unmasked sensitive tokens and keys (bearer_token, bot_token, encryption_key, signing_key)', () => {
+      const ctx = makeContext(`
+        [custom_service]
+        bearer_token = "eyJh_my_secret_bearer_token"
+        bot_token = "xoxb-1234-5678-secret-bot-token"
+        encryption_key = "my-super-secret-aes-key-32b"
+        signing_key = "my-rsa-private-signing-key"
+      `);
+      const findings = plaintextSecretsRule.check(ctx);
+      expect(findings).toHaveLength(4);
+      for (const f of findings) {
+        expect(f.ruleId).toBe('SEC-SEC-001');
+        expect(f.severity).toBe('critical');
+        expect(f.observedValue).toContain('[REDACTED_SECRET');
+        expect(f.observedValue).not.toContain('secret');
+        expect(f.observedValue).not.toContain('xoxb');
+      }
+    });
+
+    it('passes when sensitive keys use env() references', () => {
+      const ctx = makeContext(`
+        [custom_service]
+        bearer_token = "env(MY_BEARER_TOKEN)"
+        bot_token = "env(SLACK_BOT_TOKEN)"
+        encryption_key = "env(APP_ENCRYPTION_KEY)"
+        signing_key = "env(JWT_SIGNING_KEY)"
+      `);
+      const findings = plaintextSecretsRule.check(ctx);
+      expect(findings).toHaveLength(0);
+    });
+
     it('handles malformed secret values (e.g. numeric or boolean) safely', () => {
       const ctx = makeContext(`
         [auth.external.github]
@@ -251,6 +282,53 @@ describe('Security Rules Registry & Verification', () => {
           "http://127.0.0.1:8080",
           "https://app.example.com/auth/callback"
         ]
+      `);
+      expect(insecureRedirectUrlsRule.check(ctx)).toHaveLength(0);
+    });
+
+    it('flags unencrypted HTTP site_url to remote hosts as high severity', () => {
+      const ctx = makeContext(`
+        [auth]
+        site_url = "http://api.remote-production.com"
+      `);
+      const findings = insecureRedirectUrlsRule.check(ctx);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('high');
+      expect(findings[0].ruleTitle).toBe('Unencrypted HTTP Site URL');
+      expect(findings[0].path).toBe('auth.site_url');
+      expect(findings[0].observedValue).toContain('http://api.remote-production.com');
+    });
+
+    it('allows valid HTTPS, localhost, 127.0.0.1 and mobile deep-link site_url without flagging', () => {
+      const ctxHttps = makeContext(`
+        [auth]
+        site_url = "https://app.example.com"
+      `);
+      expect(insecureRedirectUrlsRule.check(ctxHttps)).toHaveLength(0);
+
+      const ctxLocalhost = makeContext(`
+        [auth]
+        site_url = "http://localhost:3000"
+      `);
+      expect(insecureRedirectUrlsRule.check(ctxLocalhost)).toHaveLength(0);
+
+      const ctxLoopback = makeContext(`
+        [auth]
+        site_url = "http://127.0.0.1:8080"
+      `);
+      expect(insecureRedirectUrlsRule.check(ctxLoopback)).toHaveLength(0);
+
+      const ctxMobile = makeContext(`
+        [auth]
+        site_url = "mycustomapp://callback"
+      `);
+      expect(insecureRedirectUrlsRule.check(ctxMobile)).toHaveLength(0);
+    });
+
+    it('does not apply additional_redirect_urls wildcard logic to site_url', () => {
+      const ctx = makeContext(`
+        [auth]
+        site_url = "https://my-preview.vercel.app"
       `);
       expect(insecureRedirectUrlsRule.check(ctx)).toHaveLength(0);
     });

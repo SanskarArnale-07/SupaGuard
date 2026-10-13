@@ -67,7 +67,7 @@ export async function buildMigrationDatabaseState(
       const file = migration.relativePath;
       const line = parsed.line;
 
-      // 1. CREATE TABLE
+      // 1. CREATE TABLE / CREATE TABLE AS SELECT
       if (stmt.CreateStmt) {
         const createStmt = stmt.CreateStmt;
         const schema = createStmt.relation?.schemaname || 'public';
@@ -87,6 +87,24 @@ export async function buildMigrationDatabaseState(
         };
 
         tables.set(key, tableState);
+      } else if (stmt.CreateTableAsStmt) {
+        const ctasStmt = stmt.CreateTableAsStmt;
+        if (ctasStmt.objtype === 'OBJECT_TABLE' || !ctasStmt.objtype) {
+          const schema = ctasStmt.into?.rel?.schemaname || 'public';
+          const name = ctasStmt.into?.rel?.relname;
+          if (name) {
+            const key = getTableKey(schema, name);
+            const tableState: TableState = {
+              schema,
+              name,
+              createdIn: { file, line },
+              rowLevelSecurityEnabled: false,
+              dropped: false,
+              policies: new Map<string, PolicyState>(),
+            };
+            tables.set(key, tableState);
+          }
+        }
       }
 
       // 2. ALTER TABLE ... ENABLE / DISABLE ROW LEVEL SECURITY
@@ -156,8 +174,38 @@ export async function buildMigrationDatabaseState(
         const permissive = createPol.permissive !== false;
         const hasExplicitUsing = createPol.qual !== undefined;
         const hasExplicitWithCheck = createPol.with_check !== undefined;
-        const isUnrestrictedUsing = isUnrestrictedPredicate(createPol.qual);
-        const isUnrestrictedWithCheck = isUnrestrictedPredicate(createPol.with_check);
+
+        // PostgreSQL command-specific default semantics:
+        // 1. USING clause:
+        //    - Applicable commands: ALL, SELECT, UPDATE, DELETE.
+        //    - If qual is provided: evaluate predicate.
+        //    - If qual is omitted: PostgreSQL defaults to unconditionally true (USING (true)).
+        //    - For INSERT: USING is not applicable.
+        let isUnrestrictedUsing = false;
+        if (rawCmd === 'all' || rawCmd === 'select' || rawCmd === 'update' || rawCmd === 'delete') {
+          isUnrestrictedUsing = hasExplicitUsing
+            ? isUnrestrictedPredicate(createPol.qual)
+            : true;
+        }
+
+        // 2. WITH CHECK clause:
+        //    - For INSERT:
+        //      If with_check is provided: evaluate predicate.
+        //      If with_check is omitted: PostgreSQL defaults to unconditionally true (WITH CHECK (true)).
+        //    - For UPDATE and ALL:
+        //      If with_check is provided: evaluate predicate.
+        //      If with_check is omitted: PostgreSQL inherits the USING clause expression!
+        //    - For SELECT and DELETE: WITH CHECK is not applicable.
+        let isUnrestrictedWithCheck = false;
+        if (rawCmd === 'insert') {
+          isUnrestrictedWithCheck = hasExplicitWithCheck
+            ? isUnrestrictedPredicate(createPol.with_check)
+            : true;
+        } else if (rawCmd === 'update' || rawCmd === 'all') {
+          isUnrestrictedWithCheck = hasExplicitWithCheck
+            ? isUnrestrictedPredicate(createPol.with_check)
+            : isUnrestrictedUsing;
+        }
 
         const policyState: PolicyState = {
           name: policyName,

@@ -673,7 +673,7 @@ describe('SQL Migration Security Scanner Suite', () => {
       expect(findings).toHaveLength(0);
     });
 
-    it('does NOT flag UPDATE policy with permissive USING (true) when WITH CHECK is restrictive', async () => {
+    it('flags UPDATE policy with permissive USING (true) when WITH CHECK is restrictive as low severity', async () => {
       const migrations: MigrationFile[] = [
         {
           filename: '01_update_checked.sql',
@@ -694,11 +694,39 @@ describe('SQL Migration Security Scanner Suite', () => {
       const state = await buildMigrationDatabaseState(migrations);
       const findings = checkSuspiciousPolicies(state);
 
-      // Permissive USING with restrictive WITH CHECK on UPDATE does not allow unrestricted writes
-      expect(findings).toHaveLength(0);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('low');
+      expect(findings[0].ruleTitle).toBe('Permissive USING on UPDATE Policy with Restrictive WITH CHECK');
+      expect(findings[0].rationale).toContain('cross-row');
     });
 
-    it('does NOT flag anon UPDATE policy with permissive USING (true) when WITH CHECK is restrictive', async () => {
+    it('flags UPDATE policy with omitted USING clause when WITH CHECK is restrictive', async () => {
+      const migrations: MigrationFile[] = [
+        {
+          filename: '01_update_omitted_using.sql',
+          relativePath: 'supabase/migrations/01_update_omitted_using.sql',
+          absolutePath: '/app/01.sql',
+          content: `
+            CREATE TABLE "public"."profiles" (id uuid, user_id uuid, bio text);
+            ALTER TABLE "public"."profiles" ENABLE ROW LEVEL SECURITY;
+            CREATE POLICY "Update own profile" ON "public"."profiles"
+              FOR UPDATE
+              TO authenticated
+              WITH CHECK (auth.uid() = user_id);
+          `,
+        },
+      ];
+
+      const state = await buildMigrationDatabaseState(migrations);
+      const findings = checkSuspiciousPolicies(state);
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('low');
+      expect(findings[0].ruleTitle).toBe('Permissive USING on UPDATE Policy with Restrictive WITH CHECK');
+      expect(findings[0].observedValue).toContain('omitted USING');
+    });
+
+    it('flags anon UPDATE policy with permissive USING (true) when WITH CHECK is restrictive as medium severity', async () => {
       const migrations: MigrationFile[] = [
         {
           filename: '01_anon_checked.sql',
@@ -719,6 +747,57 @@ describe('SQL Migration Security Scanner Suite', () => {
       const state = await buildMigrationDatabaseState(migrations);
       const findings = checkSuspiciousPolicies(state);
 
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('medium');
+      expect(findings[0].ruleTitle).toBe('Permissive USING on UPDATE Policy with Restrictive WITH CHECK');
+    });
+
+    it('passes cleanly when UPDATE policy has restrictive USING and restrictive WITH CHECK', async () => {
+      const migrations: MigrationFile[] = [
+        {
+          filename: '01_safe_update.sql',
+          relativePath: 'supabase/migrations/01_safe_update.sql',
+          absolutePath: '/app/01.sql',
+          content: `
+            CREATE TABLE "public"."profiles" (id uuid, user_id uuid, bio text);
+            ALTER TABLE "public"."profiles" ENABLE ROW LEVEL SECURITY;
+            CREATE POLICY "Update own profile" ON "public"."profiles"
+              FOR UPDATE
+              TO authenticated
+              USING (auth.uid() = user_id)
+              WITH CHECK (auth.uid() = user_id);
+          `,
+        },
+      ];
+
+      const state = await buildMigrationDatabaseState(migrations);
+      const findings = checkSuspiciousPolicies(state);
+
+      expect(findings).toHaveLength(0);
+    });
+
+    it('passes cleanly when UPDATE policy omits WITH CHECK and has restrictive USING (inheriting USING clause)', async () => {
+      const migrations: MigrationFile[] = [
+        {
+          filename: '01_inherited_update.sql',
+          relativePath: 'supabase/migrations/01_inherited_update.sql',
+          absolutePath: '/app/01.sql',
+          content: `
+            CREATE TABLE "public"."profiles" (id uuid, user_id uuid, bio text);
+            ALTER TABLE "public"."profiles" ENABLE ROW LEVEL SECURITY;
+            CREATE POLICY "Update own profile" ON "public"."profiles"
+              FOR UPDATE
+              TO authenticated
+              USING (auth.uid() = user_id);
+          `,
+        },
+      ];
+
+      const state = await buildMigrationDatabaseState(migrations);
+      const findings = checkSuspiciousPolicies(state);
+
+      // In Postgres, omitting WITH CHECK on UPDATE inherits USING (auth.uid() = user_id).
+      // Both clauses are restrictive, so no findings are emitted.
       expect(findings).toHaveLength(0);
     });
 
@@ -913,6 +992,392 @@ describe('SQL Migration Security Scanner Suite', () => {
         },
       };
       expect(isUnrestrictedPredicate(orWithTrue)).toBe(true);
+    });
+
+    describe('PostgreSQL Command-Specific Policy Defaulting Semantics (Omitted Clauses)', () => {
+      it('correctly models omitted USING on SELECT as defaulting to true (unrestricted read)', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_select_omitted_using.sql',
+            relativePath: 'supabase/migrations/01_select_omitted_using.sql',
+            content: `
+              CREATE TABLE "public"."posts" (id uuid, title text);
+              ALTER TABLE "public"."posts" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Read posts" ON "public"."posts" FOR SELECT TO anon;
+            `,
+            absolutePath: '/app/01.sql',
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('info');
+        expect(findings[0].ruleTitle).toContain('Read Access Allowed');
+        expect(findings[0].observedValue).toContain('omitted USING (defaults to true)');
+      });
+
+      it('correctly models omitted WITH CHECK on INSERT as defaulting to true (unrestricted write)', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_insert_omitted_with_check.sql',
+            relativePath: 'supabase/migrations/01_insert_omitted_with_check.sql',
+            content: `
+              CREATE TABLE "public"."leads" (id uuid, email text);
+              ALTER TABLE "public"."leads" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Submit leads" ON "public"."leads" FOR INSERT TO anon;
+            `,
+            absolutePath: '/app/01.sql',
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('high');
+        expect(findings[0].ruleTitle).toContain('Unrestricted Write Access');
+        expect(findings[0].observedValue).toContain('omitted WITH CHECK (defaults to true)');
+      });
+
+      it('correctly models omitted USING on DELETE as defaulting to true (unrestricted delete)', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_delete_omitted_using.sql',
+            relativePath: 'supabase/migrations/01_delete_omitted_using.sql',
+            content: `
+              CREATE TABLE "public"."temp_logs" (id uuid, log text);
+              ALTER TABLE "public"."temp_logs" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "Purge logs" ON "public"."temp_logs" FOR DELETE TO authenticated;
+            `,
+            absolutePath: '/app/01.sql',
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('medium');
+        expect(findings[0].ruleTitle).toContain('Unrestricted Mutation Across Rows');
+        expect(findings[0].observedValue).toContain('omitted USING (defaults to true)');
+      });
+
+      it('correctly models omitted clauses on ALL as defaulting to true for both USING and WITH CHECK', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_all_omitted.sql',
+            relativePath: 'supabase/migrations/01_all_omitted.sql',
+            content: `
+              CREATE TABLE "public"."notes" (id uuid, note text);
+              ALTER TABLE "public"."notes" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "All notes" ON "public"."notes" FOR ALL TO anon;
+            `,
+            absolutePath: '/app/01.sql',
+          },
+        ];
+        const state = await buildMigrationDatabaseState(migrations);
+        const findings = checkSuspiciousPolicies(state);
+
+        expect(findings.length).toBeGreaterThanOrEqual(1);
+        const highWriteFinding = findings.find((f) => f.severity === 'high');
+        expect(highWriteFinding).toBeDefined();
+        expect(highWriteFinding?.observedValue).toContain('omitted USING and WITH CHECK (defaults to true)');
+      });
+
+      it('correctly models ALTER POLICY when only USING is modified and WITH CHECK was omitted in CREATE POLICY', async () => {
+        // Migration 1:
+        // CREATE POLICY user_update ON public.documents FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+        // Migration 2:
+        // ALTER POLICY user_update ON public.documents USING (true);
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_create_pol.sql',
+            relativePath: 'supabase/migrations/01_create_pol.sql',
+            content: `
+              CREATE TABLE "public"."documents" (id uuid, user_id uuid);
+              ALTER TABLE "public"."documents" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "user_update" ON "public"."documents" FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+            `,
+            absolutePath: '/app/01.sql',
+          },
+          {
+            filename: '02_alter_pol.sql',
+            relativePath: 'supabase/migrations/02_alter_pol.sql',
+            content: `
+              ALTER POLICY "user_update" ON "public"."documents" USING (true);
+            `,
+            absolutePath: '/app/02.sql',
+          },
+        ];
+
+        // 1. Verify state after Migration 1 alone
+        const stateAfterM1 = await buildMigrationDatabaseState([migrations[0]]);
+        const policyM1 = stateAfterM1.tables.get('public.documents')?.policies.get('user_update');
+        expect(policyM1).toBeDefined();
+        // In PostgreSQL CREATE POLICY: omitted WITH CHECK defaults to USING expression
+        expect(policyM1?.isUnrestrictedUsing).toBe(false);
+        expect(policyM1?.isUnrestrictedWithCheck).toBe(false);
+        expect(policyM1?.hasExplicitWithCheck).toBe(false);
+
+        // 2. Verify state after Migration 2
+        const stateAfterM2 = await buildMigrationDatabaseState(migrations);
+        const policyM2 = stateAfterM2.tables.get('public.documents')?.policies.get('user_update');
+        expect(policyM2).toBeDefined();
+        // In PostgreSQL ALTER POLICY: specified clause (USING) replaces existing expression;
+        // omitted clause (WITH CHECK) retains its existing expression (auth.uid() = user_id).
+        expect(policyM2?.isUnrestrictedUsing).toBe(true);
+        expect(policyM2?.isUnrestrictedWithCheck).toBe(false);
+
+        // 3. Security Findings: Permissive USING on UPDATE with Restrictive WITH CHECK (low severity)
+        const findings = checkSuspiciousPolicies(stateAfterM2);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('low');
+        expect(findings[0].ruleTitle).toBe('Permissive USING on UPDATE Policy with Restrictive WITH CHECK');
+        expect(findings[0].rationale).toContain('cross-row');
+      });
+
+      it('correctly models ALTER POLICY when only WITH CHECK is modified', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_create.sql',
+            relativePath: 'supabase/migrations/01_create.sql',
+            content: `
+              CREATE TABLE "public"."documents" (id uuid, user_id uuid);
+              ALTER TABLE "public"."documents" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "user_update" ON "public"."documents" FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+            `,
+            absolutePath: '/app/01.sql',
+          },
+          {
+            filename: '02_alter_check.sql',
+            relativePath: 'supabase/migrations/02_alter_check.sql',
+            content: `
+              ALTER POLICY "user_update" ON "public"."documents" WITH CHECK (true);
+            `,
+            absolutePath: '/app/02.sql',
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const policy = state.tables.get('public.documents')?.policies.get('user_update');
+        expect(policy?.isUnrestrictedUsing).toBe(false); // Retained from Migration 1
+        expect(policy?.isUnrestrictedWithCheck).toBe(true); // Replaced by Migration 2
+
+        // Since USING is restrictive, users cannot target other rows for update
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('correctly models ALTER POLICY when both USING and WITH CHECK are modified', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_create.sql',
+            relativePath: 'supabase/migrations/01_create.sql',
+            content: `
+              CREATE TABLE "public"."documents" (id uuid, user_id uuid);
+              ALTER TABLE "public"."documents" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "user_update" ON "public"."documents" FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+            `,
+            absolutePath: '/app/01.sql',
+          },
+          {
+            filename: '02_alter_both.sql',
+            relativePath: 'supabase/migrations/02_alter_both.sql',
+            content: `
+              ALTER POLICY "user_update" ON "public"."documents" USING (true) WITH CHECK (true);
+            `,
+            absolutePath: '/app/02.sql',
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const policy = state.tables.get('public.documents')?.policies.get('user_update');
+        expect(policy?.isUnrestrictedUsing).toBe(true);
+        expect(policy?.isUnrestrictedWithCheck).toBe(true);
+
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('medium');
+        expect(findings[0].ruleTitle).toContain('Unrestricted Mutation Across Rows');
+      });
+
+      it('correctly models ALTER POLICY when neither expression is modified (e.g. changing roles only)', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_create.sql',
+            relativePath: 'supabase/migrations/01_create.sql',
+            content: `
+              CREATE TABLE "public"."documents" (id uuid, user_id uuid);
+              ALTER TABLE "public"."documents" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "user_update" ON "public"."documents" FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+            `,
+            absolutePath: '/app/01.sql',
+          },
+          {
+            filename: '02_alter_roles.sql',
+            relativePath: 'supabase/migrations/02_alter_roles.sql',
+            content: `
+              ALTER POLICY "user_update" ON "public"."documents" TO authenticated;
+            `,
+            absolutePath: '/app/02.sql',
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const policy = state.tables.get('public.documents')?.policies.get('user_update');
+        // Both expressions are retained
+        expect(policy?.isUnrestrictedUsing).toBe(false);
+        expect(policy?.isUnrestrictedWithCheck).toBe(false);
+
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(0);
+      });
+
+      it('correctly models ALTER POLICY when policy was created with explicit USING and WITH CHECK', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_create_explicit.sql',
+            relativePath: 'supabase/migrations/01_create_explicit.sql',
+            content: `
+              CREATE TABLE "public"."documents" (id uuid, user_id uuid);
+              ALTER TABLE "public"."documents" ENABLE ROW LEVEL SECURITY;
+              CREATE POLICY "user_update" ON "public"."documents" FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+            `,
+            absolutePath: '/app/01.sql',
+          },
+          {
+            filename: '02_alter_using.sql',
+            relativePath: 'supabase/migrations/02_alter_using.sql',
+            content: `
+              ALTER POLICY "user_update" ON "public"."documents" USING (true);
+            `,
+            absolutePath: '/app/02.sql',
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        const policy = state.tables.get('public.documents')?.policies.get('user_update');
+        expect(policy?.isUnrestrictedUsing).toBe(true);
+        expect(policy?.isUnrestrictedWithCheck).toBe(false); // Retained explicit WITH CHECK
+
+        const findings = checkSuspiciousPolicies(state);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('low');
+        expect(findings[0].ruleTitle).toBe('Permissive USING on UPDATE Policy with Restrictive WITH CHECK');
+      });
+    });
+
+    describe('PostgreSQL CREATE TABLE AS SELECT (CreateTableAsStmt) Tracking', () => {
+      it('tracks tables created with CREATE TABLE ... AS SELECT and flags missing RLS in exposed schema', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_ctas.sql',
+            relativePath: 'supabase/migrations/01_ctas.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE "public"."orders" (id int, amount numeric);
+              ALTER TABLE "public"."orders" ENABLE ROW LEVEL SECURITY;
+              CREATE TABLE "public"."order_summaries" AS SELECT id, count(*) as count FROM "public"."orders" GROUP BY id;
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        expect(state.tables.has('public.order_summaries')).toBe(true);
+        expect(state.tables.get('public.order_summaries')?.rowLevelSecurityEnabled).toBe(false);
+
+        const findings = checkMissingRls(state, { exposedSchemas: ['public'] });
+        expect(findings).toHaveLength(1);
+        expect(findings[0].ruleId).toBe('SEC-MIG-RLS-001');
+        expect(findings[0].schema).toBe('public');
+        expect(findings[0].table).toBe('order_summaries');
+      });
+
+      it('passes when table created with CREATE TABLE ... AS SELECT has RLS enabled', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_ctas_rls.sql',
+            relativePath: 'supabase/migrations/01_ctas_rls.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE "public"."order_summaries" AS SELECT 1 AS id;
+              ALTER TABLE "public"."order_summaries" ENABLE ROW LEVEL SECURITY;
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        expect(state.tables.get('public.order_summaries')?.rowLevelSecurityEnabled).toBe(true);
+
+        const findings = checkMissingRls(state, { exposedSchemas: ['public'] });
+        expect(findings).toHaveLength(0);
+      });
+
+      it('tracks table created with CREATE TABLE ... AS SELECT in one migration and enabled in subsequent migration', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_create.sql',
+            relativePath: 'supabase/migrations/01_create.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE "public"."order_summaries" AS SELECT 1 AS id;
+            `,
+          },
+          {
+            filename: '02_enable_rls.sql',
+            relativePath: 'supabase/migrations/02_enable_rls.sql',
+            absolutePath: '/app/02.sql',
+            content: `
+              ALTER TABLE "public"."order_summaries" ENABLE ROW LEVEL SECURITY;
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        expect(state.tables.get('public.order_summaries')?.rowLevelSecurityEnabled).toBe(true);
+
+        const findings = checkMissingRls(state, { exposedSchemas: ['public'] });
+        expect(findings).toHaveLength(0);
+      });
+
+      it('passes when table created with CREATE TABLE ... AS SELECT is subsequently dropped', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_ctas_drop.sql',
+            relativePath: 'supabase/migrations/01_ctas_drop.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE TABLE "public"."temp_export" AS SELECT 1 AS id;
+              DROP TABLE "public"."temp_export";
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        expect(state.tables.get('public.temp_export')?.dropped).toBe(true);
+
+        const findings = checkMissingRls(state, { exposedSchemas: ['public'] });
+        expect(findings).toHaveLength(0);
+      });
+
+      it('ignores tables created with CREATE TABLE ... AS SELECT in non-exposed schema', async () => {
+        const migrations: MigrationFile[] = [
+          {
+            filename: '01_ctas_internal.sql',
+            relativePath: 'supabase/migrations/01_ctas_internal.sql',
+            absolutePath: '/app/01.sql',
+            content: `
+              CREATE SCHEMA IF NOT EXISTS "internal";
+              CREATE TABLE "internal"."cached_stats" AS SELECT 1 AS count;
+            `,
+          },
+        ];
+
+        const state = await buildMigrationDatabaseState(migrations);
+        expect(state.tables.has('internal.cached_stats')).toBe(true);
+
+        const findings = checkMissingRls(state, { exposedSchemas: ['public'] });
+        expect(findings).toHaveLength(0);
+      });
     });
   });
 });
