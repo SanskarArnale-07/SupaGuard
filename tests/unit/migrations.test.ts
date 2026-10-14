@@ -121,6 +121,55 @@ describe('SQL Migration Security Scanner Suite', () => {
       expect(parseFinding?.rationale).toContain('incomplete');
     });
 
+    it('does not exit 0 in advisory mode when syntax error SEC-MIG-PARSE-ERR is present', async () => {
+      const fakeConfig = {
+        filePath: '/workspace/supabase/config.toml',
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(fakeConfig as any, {
+        advisory: true,
+        migrations: [
+          {
+            filename: '20240101000000_bad.sql',
+            absolutePath: '/workspace/supabase/migrations/20240101000000_bad.sql',
+            relativePath: 'supabase/migrations/20240101000000_bad.sql',
+            content: 'CREATE TABLE incomplete (',
+          },
+        ],
+      });
+
+      expect(analysis.summary.passed).toBe(false);
+      // Crucial: advisory mode MUST NOT clear exit code when there are execution/syntax errors!
+      expect(analysis.exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+      expect(analysis.findings.some((f) => f.ruleId === 'SEC-MIG-PARSE-ERR')).toBe(true);
+    });
+
+    it('exits 0 in advisory mode when only ordinary migration security findings are present', async () => {
+      const fakeConfig = {
+        filePath: '/workspace/supabase/config.toml',
+        parsed: { api: { schemas: ['public'] } },
+        explicitPaths: new Set(['api.schemas']),
+      };
+      const analysis = await analyzeConfig(fakeConfig as any, {
+        advisory: true,
+        migrations: [
+          {
+            filename: '20240101000000_missing_rls.sql',
+            absolutePath: '/workspace/supabase/migrations/20240101000000_missing_rls.sql',
+            relativePath: 'supabase/migrations/20240101000000_missing_rls.sql',
+            content: 'CREATE TABLE public.unprotected (id uuid primary key);',
+          },
+        ],
+      });
+
+      expect(analysis.summary.passed).toBe(false);
+      expect(analysis.summary.high).toBe(1);
+      // In advisory mode, ordinary findings exit 0
+      expect(analysis.exitCode).toBe(ExitCode.SUCCESS);
+      expect(analysis.advisory).toBe(true);
+    });
+
     it('fails preflight in analyzeConfig when discoveryOptions injects an unreadable migration', async () => {
       const secureConfig = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
       const loaded = {

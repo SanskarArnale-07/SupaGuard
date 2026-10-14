@@ -113,7 +113,8 @@ supaguard check [options]
 | `--config <path>` | `-c` | `./supabase/config.toml` | Path to `supabase/config.toml` or the project root directory. |
 | `--migrations <path>` | `-m` | Auto-discovered | Path to migrations directory (defaults to `./supabase/migrations`). |
 | `--format <format>` | `-f` | `text` | Output format: `text` (terminal ANSI) or `json` (machine-readable). |
-| `--strict` | `-s` | `false` | Strict mode: exits with code `1` on any finding (including `MEDIUM`, `LOW`, and `INFO`). |
+| `--strict` | `-s` | `false` | Strict mode: exits with code `1` on any finding (including `MEDIUM`, `LOW`, and `INFO`; mutually exclusive with `--advisory`). |
+| `--advisory` | `-a` | `false` | Advisory mode: reports security findings without failing the process (exits `0` on findings, non-zero on execution or configuration errors; mutually exclusive with `--strict`). |
 | `--help` | `-h` | — | Display command help and available options. |
 | `--version` | `-V` | — | Output SupaGuard version number. |
 
@@ -143,6 +144,13 @@ Fails on any finding, including non-blocking advisories:
 supaguard check --strict
 ```
 
+#### 5. Advisory Mode (CI / Pull Requests)
+Reports all security findings in logs without failing the job, while preserving non-zero exits on execution or configuration errors:
+```bash
+supaguard check --advisory
+```
+For complete GitHub Actions workflow configurations, see [GitHub Actions Integration](docs/github-actions.md).
+
 ---
 
 ## Exit Codes
@@ -151,9 +159,9 @@ SupaGuard uses deterministic exit codes to integrate cleanly with automated work
 
 | Exit Code | Constant | Meaning | Condition |
 | :---: | :--- | :--- | :--- |
-| **`0`** | `SUCCESS` | Preflight Passed | **Standard mode**: 0 `CRITICAL` and 0 `HIGH` findings.<br>**Strict mode**: 0 total findings. |
-| **`1`** | `SECURITY_FINDINGS` | Preflight Failed | **Standard mode**: 1 or more `CRITICAL` or `HIGH` findings.<br>**Strict mode**: 1 or more findings of any severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`). |
-| **`2`** | `CONFIG_ERROR` | Execution Aborted | Target configuration file not found, unreadable, or contains invalid TOML syntax. |
+| **`0`** | `SUCCESS` | Preflight Passed | **Standard mode**: 0 `CRITICAL` and 0 `HIGH` findings.<br>**Strict mode**: 0 total findings.<br>**Advisory mode**: Security findings reported without blocking (exit 0). |
+| **`1`** | `SECURITY_FINDINGS` | Preflight Failed | **Standard mode**: 1 or more `CRITICAL` or `HIGH` findings.<br>**Strict mode**: 1 or more findings of any severity.<br>**Advisory mode**: Returned only if unparseable migration SQL syntax, unreadable migration, or internal evaluation error is encountered. |
+| **`2`** | `CONFIG_ERROR` | Execution Aborted | Target configuration file not found, unreadable, or contains invalid TOML syntax; also returned when conflicting options (e.g. `--advisory` and `--strict`) are provided. |
 
 ---
 

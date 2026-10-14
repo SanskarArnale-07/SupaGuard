@@ -17,6 +17,7 @@ export interface ReportSummary {
 export interface AnalysisResult {
   targetPath: string;
   strict: boolean;
+  advisory?: boolean;
   timestamp: string;
   findings: Finding[];
   summary: ReportSummary;

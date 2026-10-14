@@ -159,4 +159,22 @@ describe('Report Formatters', () => {
     expect(parsed.findings[1].table).toBe('customers');
     expect(parsed.findings[1].view).toBeUndefined();
   });
+
+  it('formats advisory mode report with PREFLIGHT ADVISORY banner when security findings exist', () => {
+    const advisoryResult: AnalysisResult = {
+      ...sampleResult,
+      advisory: true,
+      exitCode: ExitCode.SUCCESS,
+    };
+
+    const textOutput = formatTextReport(advisoryResult);
+    expect(textOutput).toContain('PREFLIGHT ADVISORY');
+    expect(textOutput).toContain('advisory mode enabled, non-blocking');
+    expect(textOutput).not.toContain('PREFLIGHT FAILED');
+
+    const jsonOutput = formatJsonReport(advisoryResult);
+    const parsed = JSON.parse(jsonOutput);
+    expect(parsed.advisory).toBe(true);
+    expect(parsed.exitCode).toBe(ExitCode.SUCCESS);
+  });
 });

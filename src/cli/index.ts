@@ -17,8 +17,40 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
     const rawFormat = (options.format || 'text').toLowerCase();
     const format: ReportFormat = rawFormat === 'json' ? 'json' : 'text';
     const strict = Boolean(options.strict);
+    const advisory = Boolean(options.advisory);
     const configPath = options.config;
     const migrationsDir = options.migrations;
+
+    // --advisory and --strict are mutually exclusive
+    if (strict && advisory) {
+      resolvedExitCode = ExitCode.CONFIG_ERROR;
+      const message =
+        'Cannot combine --advisory and --strict options. Advisory mode (non-blocking reporting) and strict mode (zero-tolerance enforcement) are mutually exclusive.';
+      if (format === 'json') {
+        process.stdout.write(
+          JSON.stringify(
+            {
+              success: false,
+              error: {
+                code: 'CONFLICTING_OPTIONS',
+                message,
+              },
+              exitCode: ExitCode.CONFIG_ERROR,
+            },
+            null,
+            2
+          ) + '\n'
+        );
+      } else {
+        process.stderr.write(
+          `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+        );
+        process.stderr.write(
+          `${pc.dim('Hint:')} Specify either ${pc.cyan('--advisory')} for non-blocking reporting or ${pc.cyan('--strict')} for zero-tolerance enforcement, not both.\n\n`
+        );
+      }
+      return;
+    }
 
     const loadResult = loadConfig({ configPath });
 
@@ -148,6 +180,7 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
 
     const analysis = await analyzeConfig(loadResult.config, {
       strict,
+      advisory,
       migrationsDir,
     });
     const output = formatReport(analysis, format);

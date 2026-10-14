@@ -260,4 +260,50 @@ describe('SQL Migration End-to-End CLI Suite', () => {
       expect(hashAfter).toBe(hashesBefore.get(f));
     }
   });
+
+  it('runs against insecure_migrations in --advisory mode and exits with code 0 while reporting findings', async () => {
+    const configPath = path.join(fixturesDir, 'insecure_migrations', 'supabase', 'config.toml');
+
+    let capturedOutput = '';
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedOutput += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--advisory']);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    expect(exitCode).toBe(ExitCode.SUCCESS);
+    expect(capturedOutput).toContain('PREFLIGHT ADVISORY');
+    expect(capturedOutput).toContain('SEC-MIG-RLS-001');
+    expect(capturedOutput).toContain('SEC-MIG-RLS-002');
+  });
+
+  it('refuses to exit 0 in --advisory mode when a migration contains a SQL syntax error (SEC-MIG-PARSE-ERR)', async () => {
+    const configPath = path.join(fixturesDir, 'malformed_migration', 'supabase', 'config.toml');
+
+    let capturedStdout = '';
+    const origStdout = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedStdout += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--advisory']);
+    } finally {
+      process.stdout.write = origStdout;
+    }
+
+    // Crucial guarantee: execution/syntax failures MUST NOT be masked by advisory mode!
+    expect(exitCode).toBe(ExitCode.SECURITY_FINDINGS);
+    expect(capturedStdout).toContain('PREFLIGHT FAILED');
+    expect(capturedStdout).toContain('SEC-MIG-PARSE-ERR');
+  });
 });

@@ -1,4 +1,5 @@
 import pc from 'picocolors';
+import { ExitCode } from '../types/exit-codes.js';
 import type { AnalysisResult } from '../types/report.js';
 import type { Finding, Severity } from '../types/rule.js';
 
@@ -91,6 +92,10 @@ export function formatTextReport(result: AnalysisResult): string {
   let statusBanner = '';
   if (summary.passed) {
     statusBanner = pc.green(pc.bold('✔ PREFLIGHT PASSED: Project configuration meets security policy.'));
+  } else if (result.advisory && result.exitCode === ExitCode.SUCCESS) {
+    statusBanner = pc.yellow(
+      pc.bold('⚠ PREFLIGHT ADVISORY: Security findings detected (advisory mode enabled, non-blocking).')
+    );
   } else {
     const blockingReason = strict
       ? 'Strict mode enabled: non-zero findings trigger failure.'

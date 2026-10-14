@@ -6,6 +6,7 @@ export interface CliOptions {
   migrations?: string;
   format: ReportFormat;
   strict: boolean;
+  advisory?: boolean;
 }
 
 export function createCliCommand(onCheck?: (options: CliOptions) => void | Promise<void>): Command {
@@ -35,7 +36,12 @@ export function createCliCommand(onCheck?: (options: CliOptions) => void | Promi
     )
     .option(
       '-s, --strict',
-      'Strict mode: exits with non-zero code on any finding (including low and info)',
+      'Strict mode: exits with non-zero code on any finding (mutually exclusive with --advisory)',
+      false
+    )
+    .option(
+      '-a, --advisory',
+      'Advisory mode: report security findings without failing the process (mutually exclusive with --strict)',
       false
     );
 

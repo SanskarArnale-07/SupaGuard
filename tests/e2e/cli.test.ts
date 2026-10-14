@@ -203,4 +203,153 @@ describe('CLI End-to-End Test Suite', () => {
     expect(capturedStderr).not.toContain('ghp_leaked_secret_token_12345');
     expect(capturedStderr).toContain('[REDACTED_SECRET]');
   });
+
+  it('supports --advisory mode by reporting findings but exiting with code 0', async () => {
+    const configPath = path.join(fixturesDir, 'weakened_security', 'supabase', 'config.toml');
+
+    let capturedStdout = '';
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedStdout += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--advisory']);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    // In advisory mode, findings are reported but process exits with code 0
+    expect(exitCode).toBe(ExitCode.SUCCESS);
+    expect(capturedStdout).toContain('PREFLIGHT ADVISORY');
+    expect(capturedStdout).toContain('SEC-AUTH-001');
+  });
+
+  it('supports --advisory mode with JSON format emitting advisory flag and exitCode 0', async () => {
+    const configPath = path.join(fixturesDir, 'weakened_security', 'supabase', 'config.toml');
+
+    let capturedStdout = '';
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedStdout += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli([
+        'node',
+        'supaguard',
+        'check',
+        '--config',
+        configPath,
+        '--advisory',
+        '--format',
+        'json',
+      ]);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(exitCode).toBe(ExitCode.SUCCESS);
+    const parsed = JSON.parse(capturedStdout);
+    expect(parsed.advisory).toBe(true);
+    expect(parsed.exitCode).toBe(ExitCode.SUCCESS);
+    expect(parsed.summary.passed).toBe(false);
+    expect(parsed.summary.high).toBeGreaterThan(0);
+    expect(parsed.findings.length).toBeGreaterThan(0);
+  });
+
+  it('preserves code 2 (CONFIG_ERROR) in --advisory mode when config file is missing', async () => {
+    const nonExistentPath = path.join(fixturesDir, 'ghost_dir', 'supabase', 'config.toml');
+    const exitCode = await runCli([
+      'node',
+      'supaguard',
+      'check',
+      '--config',
+      nonExistentPath,
+      '--advisory',
+    ]);
+    expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
+  });
+
+  it('preserves code 2 (CONFIG_ERROR) in --advisory mode when config has invalid TOML', async () => {
+    const invalidPath = path.join(fixturesDir, 'invalid_toml', 'supabase', 'config.toml');
+    const exitCode = await runCli([
+      'node',
+      'supaguard',
+      'check',
+      '--config',
+      invalidPath,
+      '--advisory',
+    ]);
+    expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
+  });
+
+  it('rejects combining --advisory and --strict options with exit code 2 (CONFIG_ERROR) in text mode', async () => {
+    const configPath = path.join(fixturesDir, 'normal_secure', 'supabase', 'config.toml');
+
+    let capturedStderr = '';
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      capturedStderr += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli([
+        'node',
+        'supaguard',
+        'check',
+        '--config',
+        configPath,
+        '--strict',
+        '--advisory',
+      ]);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
+    expect(capturedStderr).toContain('Cannot combine --advisory and --strict options');
+    expect(capturedStderr).toContain('mutually exclusive');
+  });
+
+  it('rejects combining --advisory and --strict options with exit code 2 and structured error in JSON mode', async () => {
+    const configPath = path.join(fixturesDir, 'normal_secure', 'supabase', 'config.toml');
+
+    let capturedStdout = '';
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedStdout += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli([
+        'node',
+        'supaguard',
+        'check',
+        '--config',
+        configPath,
+        '--strict',
+        '--advisory',
+        '--format',
+        'json',
+      ]);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
+    const parsed = JSON.parse(capturedStdout);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error.code).toBe('CONFLICTING_OPTIONS');
+    expect(parsed.error.message).toContain('Cannot combine --advisory and --strict');
+    expect(parsed.exitCode).toBe(ExitCode.CONFIG_ERROR);
+  });
 });

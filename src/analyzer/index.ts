@@ -8,7 +8,7 @@ import { checkMissingRls } from '../rules/migrations/missing-rls.js';
 import { checkSuspiciousPolicies } from '../rules/migrations/suspicious-policies.js';
 import { checkViewSecurity } from '../rules/migrations/view-security.js';
 import { RuleRegistry } from '../rules/registry.js';
-import { ExitCode } from '../types/exit-codes.js';
+import { ExitCode, type ExitCodeValue } from '../types/exit-codes.js';
 import type { LoadedConfig } from '../types/config.js';
 import type { AnalysisResult, ReportSummary } from '../types/report.js';
 import type { Finding, Severity } from '../types/rule.js';
@@ -16,6 +16,8 @@ import type { Finding, Severity } from '../types/rule.js';
 export interface AnalyzerOptions {
   registry?: RuleRegistry;
   strict?: boolean;
+  /** Whether to run in advisory mode (exit 0 on security findings, non-zero on execution errors) */
+  advisory?: boolean;
   /** Explicit directory for SQL migrations (optional) */
   migrationsDir?: string;
   /** In-memory migration files (optional, useful for testing) */
@@ -28,6 +30,31 @@ export interface AnalyzerOptions {
   discoveryOptions?: Partial<DiscoveryOptions>;
   /** Whether to skip migration scanning entirely (default false) */
   skipMigrations?: boolean;
+}
+
+const EXECUTION_ERROR_RULE_IDS = new Set([
+  'SEC-MIG-DISCOVERY-ERR',
+  'SEC-MIG-READ-ERR',
+  'SEC-MIG-PARSE-ERR',
+  'SEC-MIG-INTERNAL-ERR',
+]);
+
+/**
+ * Checks if a finding represents an operational/execution error rather than
+ * an ordinary security finding.
+ */
+export function isExecutionErrorFinding(finding: Finding): boolean {
+  return (
+    EXECUTION_ERROR_RULE_IDS.has(finding.ruleId) ||
+    (finding.path === '(internal)' && finding.observedValue === '(evaluation error)')
+  );
+}
+
+/**
+ * Checks if any findings represent operational/execution errors.
+ */
+export function hasExecutionErrors(findings: Finding[]): boolean {
+  return findings.some(isExecutionErrorFinding);
 }
 
 const SEVERITY_WEIGHT: Record<Severity, number> = {
@@ -222,11 +249,19 @@ export async function analyzeConfig(
     passed,
   };
 
-  const exitCode = passed ? ExitCode.SUCCESS : ExitCode.SECURITY_FINDINGS;
+  let exitCode: ExitCodeValue = passed ? ExitCode.SUCCESS : ExitCode.SECURITY_FINDINGS;
+
+  // In advisory mode, ordinary security findings do not block execution (exit 0).
+  // However, actual execution failures, unreadable inputs, discovery errors,
+  // syntax errors, and unexpected internal errors must not be silently hidden.
+  if (options.advisory && !strict && exitCode === ExitCode.SECURITY_FINDINGS && !hasExecutionErrors(allFindings)) {
+    exitCode = ExitCode.SUCCESS;
+  }
 
   return {
     targetPath: config.filePath,
     strict,
+    advisory: options.advisory ?? false,
     timestamp: new Date().toISOString(),
     findings: allFindings,
     summary,
