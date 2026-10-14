@@ -878,3 +878,188 @@ export async function parseMigrationSql(content: string): Promise<SqlParseResult
     };
   }
 }
+
+/**
+ * Parses a boolean option argument from a PostgreSQL DefElem node.
+ * Supports string spellings ('true', 't', 'on', 'yes', '1' vs 'false', 'f', 'off', 'no', '0'),
+ * integers, TypeName identifiers, and omitted arguments (which default to true in PostgreSQL).
+ */
+export function parseBooleanOptionArg(arg: any): boolean {
+  if (arg === undefined || arg === null) {
+    // In PostgreSQL, specifying an option without "= value" (e.g. WITH (security_invoker)) defaults to true
+    return true;
+  }
+
+  // 1. String literal: 'true', 'on', 'off', etc.
+  if (typeof arg.String?.sval === 'string') {
+    const s = arg.String.sval.trim().toLowerCase();
+    return s === 'true' || s === 't' || s === 'on' || s === 'yes' || s === '1';
+  }
+
+  // 2. Unquoted identifier (parses as TypeName in pgsql-parser): e.g. security_invoker = off / on / true
+  if (Array.isArray(arg.TypeName?.names)) {
+    const sval = arg.TypeName.names[0]?.String?.sval;
+    if (typeof sval === 'string') {
+      const s = sval.trim().toLowerCase();
+      return s === 'true' || s === 't' || s === 'on' || s === 'yes' || s === '1';
+    }
+  }
+
+  // 3. Integer literal: e.g. security_invoker = 1 / 0
+  if (typeof arg.Integer?.ival === 'number') {
+    return arg.Integer.ival !== 0;
+  }
+  if (typeof arg.A_Const?.ival?.ival === 'number') {
+    return arg.A_Const.ival.ival !== 0;
+  }
+
+  // 4. Boolean literal in A_Const
+  if (typeof arg.A_Const?.boolval?.boolval === 'boolean') {
+    return arg.A_Const.boolval.boolval;
+  }
+
+  return false;
+}
+
+/**
+ * Parses the security_invoker option from a ViewStmt or AlterTableCmd reloptions list.
+ * Returns true if security_invoker is explicitly set to true/on/1.
+ * Returns false if omitted or explicitly set to false/off/0.
+ */
+export function parseSecurityInvokerOption(optionsList: any[] | undefined): boolean {
+  if (!optionsList || !Array.isArray(optionsList)) {
+    return false;
+  }
+
+  for (const item of optionsList) {
+    const def = item?.DefElem;
+    if (!def || typeof def.defname !== 'string') continue;
+
+    if (def.defname.toLowerCase() === 'security_invoker') {
+      return parseBooleanOptionArg(def.arg);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Traverses a view query's SelectStmt AST to extract all physical database relation dependencies.
+ * Correctly distinguishes Common Table Expression (CTE) aliases from physical database tables.
+ */
+export function extractViewReferencedTables(
+  queryNode: any,
+  outerCtes: Set<string> = new Set<string>()
+): Array<{ schema?: string; table: string }> {
+  const results: Array<{ schema?: string; table: string }> = [];
+  const localCtes = new Set<string>(outerCtes);
+
+  if (!queryNode || typeof queryNode !== 'object') return results;
+
+  const selectStmt = queryNode.SelectStmt || queryNode;
+  if (!selectStmt || typeof selectStmt !== 'object') return results;
+
+  // 1. Process CTEs in withClause
+  if (selectStmt.withClause && Array.isArray(selectStmt.withClause.ctes)) {
+    for (const item of selectStmt.withClause.ctes) {
+      const cte = item?.CommonTableExpr;
+      if (cte && typeof cte.ctename === 'string') {
+        localCtes.add(cte.ctename.toLowerCase());
+      }
+    }
+    // Inspect CTE queries themselves for physical base tables
+    for (const item of selectStmt.withClause.ctes) {
+      const cte = item?.CommonTableExpr;
+      if (cte && cte.ctequery) {
+        results.push(...extractViewReferencedTables(cte.ctequery, localCtes));
+      }
+    }
+  }
+
+  function walkFromItem(fromItem: any) {
+    if (!fromItem || typeof fromItem !== 'object') return;
+
+    if (fromItem.RangeVar) {
+      const rv = fromItem.RangeVar;
+      const tableName = rv.relname?.toLowerCase();
+      const schemaName = rv.schemaname?.toLowerCase();
+      if (tableName && !localCtes.has(tableName)) {
+        results.push({ schema: schemaName, table: tableName });
+      }
+    } else if (fromItem.JoinExpr) {
+      walkFromItem(fromItem.JoinExpr.larg);
+      walkFromItem(fromItem.JoinExpr.rarg);
+      if (fromItem.JoinExpr.quals) {
+        walkExpression(fromItem.JoinExpr.quals);
+      }
+    } else if (fromItem.RangeSubselect) {
+      if (fromItem.RangeSubselect.subquery) {
+        results.push(...extractViewReferencedTables(fromItem.RangeSubselect.subquery, localCtes));
+      }
+    }
+  }
+
+  function walkExpression(expr: any) {
+    if (!expr || typeof expr !== 'object') return;
+
+    if (expr.SubLink && expr.SubLink.subselect) {
+      results.push(...extractViewReferencedTables(expr.SubLink.subselect, localCtes));
+    }
+    for (const key of Object.keys(expr)) {
+      if (key === 'subselect') continue;
+      const val = expr[key];
+      if (val && typeof val === 'object') {
+        if (Array.isArray(val)) {
+          for (const item of val) walkExpression(item);
+        } else {
+          walkExpression(val);
+        }
+      }
+    }
+  }
+
+  // 2. targetList (scalar subqueries in SELECT projection)
+  if (Array.isArray(selectStmt.targetList)) {
+    for (const target of selectStmt.targetList) {
+      if (target?.ResTarget?.val) {
+        walkExpression(target.ResTarget.val);
+      }
+    }
+  }
+
+  // 3. fromClause
+  if (Array.isArray(selectStmt.fromClause)) {
+    for (const fromItem of selectStmt.fromClause) {
+      walkFromItem(fromItem);
+    }
+  }
+
+  // 4. whereClause & havingClause
+  if (selectStmt.whereClause) {
+    walkExpression(selectStmt.whereClause);
+  }
+  if (selectStmt.havingClause) {
+    walkExpression(selectStmt.havingClause);
+  }
+
+  // 4. Set operations (UNION, INTERSECT, EXCEPT)
+  if (selectStmt.larg) {
+    results.push(...extractViewReferencedTables(selectStmt.larg, localCtes));
+  }
+  if (selectStmt.rarg) {
+    results.push(...extractViewReferencedTables(selectStmt.rarg, localCtes));
+  }
+
+  // Deduplicate results
+  const seen = new Set<string>();
+  const deduped: Array<{ schema?: string; table: string }> = [];
+  for (const ref of results) {
+    const key = `${ref.schema || ''}.${ref.table}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(ref);
+    }
+  }
+
+  return deduped;
+}

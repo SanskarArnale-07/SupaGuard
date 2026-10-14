@@ -1,12 +1,15 @@
 import {
   extractRowOwnershipColumns,
+  extractViewReferencedTables,
   hasAuthReference,
   hasEntityMembershipSubquery,
   hasRowOwnershipPredicate,
   hasTenantBoundaryPredicate,
   isNarrowingRestrictivePredicate,
   isUnrestrictedPredicate,
+  parseBooleanOptionArg,
   parseMigrationSql,
+  parseSecurityInvokerOption,
 } from './parser.js';
 import type {
   MigrationDatabaseState,
@@ -14,6 +17,7 @@ import type {
   PolicyCommand,
   PolicyState,
   TableState,
+  ViewState,
 } from './types.js';
 
 function extractRoles(rolesList: any[] | undefined): string[] {
@@ -47,6 +51,7 @@ export async function buildMigrationDatabaseState(
   migrations: MigrationFile[]
 ): Promise<MigrationDatabaseState> {
   const tables = new Map<string, TableState>();
+  const views = new Map<string, ViewState>();
   const syntaxErrors: Array<{
     file: string;
     line: number;
@@ -116,46 +121,141 @@ export async function buildMigrationDatabaseState(
         }
       }
 
-      // 2. ALTER TABLE ... ENABLE / DISABLE ROW LEVEL SECURITY
+      // 2. CREATE VIEW / CREATE OR REPLACE VIEW
+      else if (stmt.ViewStmt) {
+        const viewStmt = stmt.ViewStmt;
+        const schema = (viewStmt.view?.schemaname || 'public').trim().toLowerCase();
+        const name = (viewStmt.view?.relname || '').trim();
+        if (name) {
+          const key = getTableKey(schema, name);
+          const isReplace = viewStmt.replace === true;
+          const hasExplicitOptions = Array.isArray(viewStmt.options);
+          const securityInvoker = hasExplicitOptions
+            ? parseSecurityInvokerOption(viewStmt.options)
+            : false; // In PostgreSQL, omitted options default to false (and reset on replace)
+
+          const referencedTables = extractViewReferencedTables(viewStmt.query);
+
+          const existing = views.get(key);
+          if (existing && isReplace) {
+            // In PostgreSQL, CREATE OR REPLACE VIEW replaces reloptions and query definition
+            existing.securityInvoker = securityInvoker;
+            existing.referencedTables = referencedTables;
+            existing.dropped = false;
+            existing.definitionUntracked = false;
+            existing.modifiedIn = { file, line };
+          } else {
+            views.set(key, {
+              schema,
+              name,
+              securityInvoker,
+              referencedTables,
+              createdIn: { file, line },
+              dropped: false,
+            });
+          }
+        }
+      }
+
+      // 3. ALTER TABLE / ALTER VIEW
       else if (stmt.AlterTableStmt) {
         const alterStmt = stmt.AlterTableStmt;
-        const schema = alterStmt.relation?.schemaname || 'public';
-        const name = alterStmt.relation?.relname;
-        if (!name) continue;
 
-        const key = getTableKey(schema, name);
-        let table = tables.get(key);
+        if (alterStmt.objtype === 'OBJECT_VIEW') {
+          const schema = (alterStmt.relation?.schemaname || 'public').trim().toLowerCase();
+          const name = (alterStmt.relation?.relname || '').trim();
+          if (name) {
+            const key = getTableKey(schema, name);
+            let view = views.get(key);
 
-        if (!table) {
-          // Table created prior or outside parsed migrations, track it
-          table = {
-            schema,
-            name,
-            createdIn: { file, line },
-            rowLevelSecurityEnabled: false,
-            dropped: false,
-            policies: new Map<string, PolicyState>(),
-          };
-          tables.set(key, table);
-        }
+            if (!view) {
+              view = {
+                schema,
+                name,
+                securityInvoker: false,
+                referencedTables: [],
+                definitionUntracked: true,
+                createdIn: { file, line },
+                dropped: false,
+              };
+              views.set(key, view);
+            }
 
-        if (Array.isArray(alterStmt.cmds)) {
-          for (const cmdItem of alterStmt.cmds) {
-            const cmd = cmdItem?.AlterTableCmd;
-            if (!cmd) continue;
+            if (Array.isArray(alterStmt.cmds)) {
+              for (const cmdItem of alterStmt.cmds) {
+                const cmd = cmdItem?.AlterTableCmd;
+                if (!cmd) continue;
 
-            if (cmd.subtype === 'AT_EnableRowSecurity') {
-              table.rowLevelSecurityEnabled = true;
-              table.rlsChangedIn = { file, line, enabled: true };
-            } else if (cmd.subtype === 'AT_DisableRowSecurity') {
-              table.rowLevelSecurityEnabled = false;
-              table.rlsChangedIn = { file, line, enabled: false };
+                if (cmd.subtype === 'AT_SetRelOptions' && Array.isArray(cmd.def?.List?.items)) {
+                  for (const item of cmd.def.List.items) {
+                    const def = item?.DefElem;
+                    if (def?.defname?.toLowerCase() === 'security_invoker') {
+                      view.securityInvoker = parseBooleanOptionArg(def.arg);
+                      view.modifiedIn = { file, line };
+                    }
+                  }
+                } else if (cmd.subtype === 'AT_ResetRelOptions' && Array.isArray(cmd.def?.List?.items)) {
+                  for (const item of cmd.def.List.items) {
+                    const def = item?.DefElem;
+                    if (def?.defname?.toLowerCase() === 'security_invoker') {
+                      view.securityInvoker = false;
+                      view.modifiedIn = { file, line };
+                    }
+                  }
+                } else if (cmd.subtype === 'AT_ChangeOwner' && cmd.newowner?.rolename) {
+                  view.owner = cmd.newowner.rolename.trim().toLowerCase();
+                }
+              }
+            }
+          }
+        } else {
+          // Table alteration (ENABLE/DISABLE/FORCE ROW LEVEL SECURITY, OWNER TO)
+          const schema = alterStmt.relation?.schemaname || 'public';
+          const name = alterStmt.relation?.relname;
+          if (name) {
+            const key = getTableKey(schema, name);
+            let table = tables.get(key);
+
+            if (!table) {
+              // Table created prior or outside parsed migrations, track it
+              table = {
+                schema,
+                name,
+                createdIn: { file, line },
+                rowLevelSecurityEnabled: false,
+                dropped: false,
+                policies: new Map<string, PolicyState>(),
+              };
+              tables.set(key, table);
+            }
+
+            if (Array.isArray(alterStmt.cmds)) {
+              for (const cmdItem of alterStmt.cmds) {
+                const cmd = cmdItem?.AlterTableCmd;
+                if (!cmd) continue;
+
+                if (cmd.subtype === 'AT_EnableRowSecurity') {
+                  table.rowLevelSecurityEnabled = true;
+                  table.rlsChangedIn = { file, line, enabled: true };
+                } else if (cmd.subtype === 'AT_DisableRowSecurity') {
+                  table.rowLevelSecurityEnabled = false;
+                  table.rlsChangedIn = { file, line, enabled: false };
+                } else if (cmd.subtype === 'AT_ForceRowSecurity') {
+                  table.forceRowLevelSecurity = true;
+                  table.rlsChangedIn = { file, line, enabled: table.rowLevelSecurityEnabled };
+                } else if (cmd.subtype === 'AT_NoForceRowSecurity') {
+                  table.forceRowLevelSecurity = false;
+                  table.rlsChangedIn = { file, line, enabled: table.rowLevelSecurityEnabled };
+                } else if (cmd.subtype === 'AT_ChangeOwner' && cmd.newowner?.rolename) {
+                  table.owner = cmd.newowner.rolename.trim().toLowerCase();
+                }
+              }
             }
           }
         }
       }
 
-      // 3. CREATE POLICY
+      // 4. CREATE POLICY
       else if (stmt.CreatePolicyStmt) {
         const createPol = stmt.CreatePolicyStmt;
         const policyName = createPol.policy_name;
@@ -429,6 +529,30 @@ export async function buildMigrationDatabaseState(
               }
             }
           }
+        } else if (dropStmt.removeType === 'OBJECT_VIEW' && Array.isArray(dropStmt.objects)) {
+          for (const obj of dropStmt.objects) {
+            const items = obj?.List?.items;
+            if (!Array.isArray(items) || items.length === 0) continue;
+
+            let schema = 'public';
+            let viewName = '';
+
+            if (items.length === 1) {
+              viewName = items[0]?.String?.sval || '';
+            } else if (items.length >= 2) {
+              schema = items[0]?.String?.sval || 'public';
+              viewName = items[1]?.String?.sval || '';
+            }
+
+            if (viewName) {
+              const key = getTableKey(schema, viewName);
+              const view = views.get(key);
+              if (view) {
+                view.dropped = true;
+                view.droppedIn = { file, line };
+              }
+            }
+          }
         }
       }
     }
@@ -436,6 +560,7 @@ export async function buildMigrationDatabaseState(
 
   return {
     tables,
+    views,
     migrationsProcessed,
     syntaxErrors,
   };

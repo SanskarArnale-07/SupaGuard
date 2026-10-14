@@ -129,6 +129,10 @@ export interface TableState {
     line: number;
     enabled: boolean;
   };
+  /** Whether FORCE ROW LEVEL SECURITY is enabled on this table */
+  forceRowLevelSecurity?: boolean;
+  /** Table owner if explicitly altered */
+  owner?: string;
   /** Whether this table has been dropped */
   dropped: boolean;
   /** Location where table was dropped */
@@ -141,11 +145,53 @@ export interface TableState {
 }
 
 /**
+ * State representation of a database view.
+ */
+export interface ViewState {
+  /** Database schema, e.g. "public" */
+  schema: string;
+  /** View name */
+  name: string;
+  /** Whether the security_invoker view option is enabled (PostgreSQL 15+) */
+  securityInvoker: boolean;
+  /** Whether the security_barrier view option is enabled */
+  securityBarrier?: boolean;
+  /** View owner role if explicitly altered (e.g. ALTER VIEW ... OWNER TO) */
+  owner?: string;
+  /** Underlying tables or views referenced by this view's query */
+  referencedTables: Array<{
+    schema?: string;
+    table: string;
+  }>;
+  /** Whether the CREATE VIEW definition was missing in tracked migrations (e.g. encountered only via ALTER VIEW) */
+  definitionUntracked?: boolean;
+  /** Location where view was created */
+  createdIn: {
+    file: string;
+    line: number;
+  };
+  /** Location where view was last altered or replaced (if applicable) */
+  modifiedIn?: {
+    file: string;
+    line: number;
+  };
+  /** Whether this view has been dropped */
+  dropped: boolean;
+  /** Location where view was dropped (if applicable) */
+  droppedIn?: {
+    file: string;
+    line: number;
+  };
+}
+
+/**
  * Aggregated database state resulting from applying migration files in order.
  */
 export interface MigrationDatabaseState {
   /** Tables discovered, keyed by `${schema}.${name}` */
   tables: Map<string, TableState>;
+  /** Views discovered, keyed by `${schema}.${name}` */
+  views: Map<string, ViewState>;
   /** Migrations successfully processed in order */
   migrationsProcessed: string[];
   /** Syntax or parser warnings/errors encountered across migration files */

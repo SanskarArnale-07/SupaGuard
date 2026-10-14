@@ -45,6 +45,8 @@ export interface Finding {
   schema?: string;
   /** Affected database table */
   table?: string;
+  /** Affected database view (if applicable) */
+  view?: string;
   /** Name of affected RLS policy (if applicable) */
   policyName?: string;
 }

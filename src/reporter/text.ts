@@ -31,7 +31,10 @@ function formatFinding(finding: Finding, index: number, total: number): string {
     `   ${pc.dim(pathLabel)}   ${path}`,
   ];
 
-  if (finding.schema && finding.table) {
+  if (finding.view) {
+    const viewName = finding.schema ? `${finding.schema}.${finding.view}` : finding.view;
+    lines.push(`   ${pc.dim('Target View:')}    ${pc.magenta(viewName)}`);
+  } else if (finding.schema && finding.table) {
     lines.push(`   ${pc.dim('Target Table:')}   ${pc.magenta(`${finding.schema}.${finding.table}`)}`);
   }
 

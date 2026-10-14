@@ -6,6 +6,7 @@ import type { MigrationFile, UnreadableMigrationFile, MigrationDiscoveryError } 
 import { defaultRegistry } from '../rules/index.js';
 import { checkMissingRls } from '../rules/migrations/missing-rls.js';
 import { checkSuspiciousPolicies } from '../rules/migrations/suspicious-policies.js';
+import { checkViewSecurity } from '../rules/migrations/view-security.js';
 import { RuleRegistry } from '../rules/registry.js';
 import { ExitCode } from '../types/exit-codes.js';
 import type { LoadedConfig } from '../types/config.js';
@@ -103,7 +104,7 @@ export async function analyzeConfig(
     }
 
     if (migrations.length > 0 || readErrors.length > 0 || discoveryErrors.length > 0) {
-      migrationRulesCount = 2; // SEC-MIG-RLS-001 and SEC-MIG-RLS-002
+      migrationRulesCount = 3; // SEC-MIG-RLS-001, SEC-MIG-RLS-002, and SEC-MIG-VIEW-001
     }
 
     // Record discovery errors as HIGH-severity diagnostics
@@ -175,6 +176,10 @@ export async function analyzeConfig(
         // Rule 2: SEC-MIG-RLS-002 (Suspicious RLS policies)
         const policyFindings = checkSuspiciousPolicies(dbState);
         allFindings.push(...policyFindings);
+
+        // Rule 3: SEC-MIG-VIEW-001 (PostgreSQL View Security)
+        const viewFindings = checkViewSecurity(dbState, { exposedSchemas });
+        allFindings.push(...viewFindings);
       } catch (err: unknown) {
         const errorObj = err as { message?: string };
         allFindings.push({

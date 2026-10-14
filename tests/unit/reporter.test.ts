@@ -95,4 +95,68 @@ describe('Report Formatters', () => {
     expect(jsonStr).not.toContain('sk_live_another_leaked_key_456');
     expect(jsonStr).toContain('[REDACTED_SECRET');
   });
+
+  it('formats SEC-MIG-VIEW-001 findings with Target View label without setting Target Table, preserving table formatting and JSON compatibility', () => {
+    const viewResult: AnalysisResult = {
+      targetPath: '/projects/my-supabase-app/supabase/config.toml',
+      strict: false,
+      timestamp: '2026-10-14T10:00:00.000Z',
+      findings: [
+        {
+          ruleId: 'SEC-MIG-VIEW-001',
+          ruleTitle: 'PostgreSQL View May Bypass Underlying Row-Level Security',
+          severity: 'high',
+          category: 'migrations',
+          path: 'supabase/migrations/01_schema.sql:4',
+          observedValue: 'security_invoker not enabled (defaults to false)',
+          rationale: "In PostgreSQL, underlying relation permissions and row-level security (RLS) evaluation for ordinary views normally use the view owner's context.",
+          policyAssumption: 'All PostgreSQL views in API-exposed schemas should enable security_invoker.',
+          remediation: 'Add "ALTER VIEW "customer_summary" SET (security_invoker = true);".',
+          filePath: 'supabase/migrations/01_schema.sql',
+          line: 4,
+          schema: 'public',
+          view: 'customer_summary',
+        },
+        {
+          ruleId: 'SEC-MIG-RLS-001',
+          ruleTitle: 'Table in API-Exposed Schema Lacks Row Level Security',
+          severity: 'high',
+          category: 'migrations',
+          path: 'supabase/migrations/01_schema.sql:1',
+          observedValue: 'Row Level Security disabled (final state)',
+          rationale: 'Table in public schema lacks RLS.',
+          policyAssumption: 'Tables in exposed schemas must have RLS.',
+          remediation: 'Enable RLS.',
+          filePath: 'supabase/migrations/01_schema.sql',
+          line: 1,
+          schema: 'public',
+          table: 'customers',
+        },
+      ],
+      summary: {
+        totalRulesEvaluated: 16,
+        totalFindings: 2,
+        critical: 0,
+        high: 2,
+        medium: 0,
+        low: 0,
+        info: 0,
+        passed: false,
+      },
+      exitCode: ExitCode.SECURITY_FINDINGS,
+    };
+
+    const textOutput = formatTextReport(viewResult);
+    expect(textOutput).toContain('Target View:');
+    expect(textOutput).toContain('public.customer_summary');
+    expect(textOutput).toContain('Target Table:');
+    expect(textOutput).toContain('public.customers');
+
+    const jsonOutput = formatJsonReport(viewResult);
+    const parsed = JSON.parse(jsonOutput);
+    expect(parsed.findings[0].view).toBe('customer_summary');
+    expect(parsed.findings[0].table).toBeUndefined();
+    expect(parsed.findings[1].table).toBe('customers');
+    expect(parsed.findings[1].view).toBeUndefined();
+  });
 });
