@@ -295,7 +295,7 @@ export function checkViewSecurity(
         category: 'migrations',
         path: location,
         observedValue: `security_invoker not enabled (references untracked relations: ${untrackedNames})`,
-        rationale: `View "${view.schema}.${view.name}" ${originDesc} in schema "${view.schema}" exposed by PostgREST without WITH (security_invoker = true). It references relation(s) not defined in tracked migrations: ${untrackedNames}. SupaGuard cannot statically determine whether these relations enforce Row Level Security.`,
+        rationale: `View "${view.schema}.${view.name}" ${originDesc} in schema "${view.schema}" exposed by PostgREST without WITH (security_invoker = true). It references relation(s) not defined in tracked migrations: ${untrackedNames}. SupaPreflight cannot statically determine whether these relations enforce Row Level Security.`,
         policyAssumption:
           'Exposed views referencing external or unmanaged relations should specify WITH (security_invoker = true) to prevent unintended privilege escalation.',
         remediation: `Verify whether the referenced relations (${untrackedNames}) enforce Row Level Security, and consider adding "ALTER VIEW ${qualifiedView} SET (security_invoker = true);".`,

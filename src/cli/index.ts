@@ -43,7 +43,7 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
         );
       } else {
         process.stderr.write(
-          `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+          `\n${pc.red(pc.bold('✖ SupaPreflight Configuration Error:'))} ${message}\n\n`
         );
         process.stderr.write(
           `${pc.dim('Hint:')} Specify either ${pc.cyan('--advisory')} for non-blocking reporting or ${pc.cyan('--strict')} for zero-tolerance enforcement, not both.\n\n`
@@ -71,7 +71,7 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
         );
       } else {
         process.stderr.write(
-          `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${loadResult.error.message}\n\n`
+          `\n${pc.red(pc.bold('✖ SupaPreflight Configuration Error:'))} ${loadResult.error.message}\n\n`
         );
         if (loadResult.error.code === 'FILE_NOT_FOUND') {
           process.stderr.write(
@@ -111,7 +111,7 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
           );
         } else {
           process.stderr.write(
-            `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+            `\n${pc.red(pc.bold('✖ SupaPreflight Configuration Error:'))} ${message}\n\n`
           );
           process.stderr.write(
             `${pc.dim('Hint:')} Verify that the path passed to ${pc.cyan('--migrations')} exists, or omit the flag to use default discovery.\n\n`
@@ -142,7 +142,7 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
             );
           } else {
             process.stderr.write(
-              `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+              `\n${pc.red(pc.bold('✖ SupaPreflight Configuration Error:'))} ${message}\n\n`
             );
             process.stderr.write(
               `${pc.dim('Hint:')} Pass a directory containing SQL migration files, not a single file.\n\n`
@@ -171,7 +171,7 @@ export async function runCli(argv: string[] = process.argv): Promise<ExitCodeVal
           );
         } else {
           process.stderr.write(
-            `\n${pc.red(pc.bold('✖ SupaGuard Configuration Error:'))} ${message}\n\n`
+            `\n${pc.red(pc.bold('✖ SupaPreflight Configuration Error:'))} ${message}\n\n`
           );
         }
         return;

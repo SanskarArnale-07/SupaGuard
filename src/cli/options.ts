@@ -13,8 +13,8 @@ export function createCliCommand(onCheck?: (options: CliOptions) => void | Promi
   const program = new Command();
 
   program
-    .name('supaguard')
-    .description('SupaGuard — Security preflight CLI for Supabase projects')
+    .name('supa-preflight')
+    .description('SupaPreflight — Security preflight CLI for Supabase projects')
     .version('0.1.0')
     .exitOverride();
 

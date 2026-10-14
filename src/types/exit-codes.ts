@@ -1,5 +1,5 @@
 /**
- * SupaGuard CLI process exit codes.
+ * SupaPreflight CLI process exit codes.
  */
 export const ExitCode = {
   /** Analysis completed successfully with no threshold-exceeding findings. */

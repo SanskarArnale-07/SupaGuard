@@ -62,7 +62,7 @@ export function formatTextReport(result: AnalysisResult): string {
 
   const header = [
     pc.bold(pc.cyan('======================================================================')),
-    pc.bold(pc.cyan(' SupaGuard — Supabase Security Preflight Analyzer')),
+    pc.bold(pc.cyan(' SupaPreflight — Supabase Security Preflight Analyzer')),
     pc.bold(pc.cyan('======================================================================')),
     `${pc.dim('Target File:')} ${targetPath}`,
     `${pc.dim('Timestamp:')}   ${result.timestamp}`,

@@ -149,7 +149,7 @@ export async function analyzeConfig(
         policyAssumption:
           'Located migration directories must be accessible and readable so security preflights can accurately evaluate database state.',
         remediation:
-          'Verify directory permissions and ensure SupaGuard has permission to read and list the migrations directory.',
+          'Verify directory permissions and ensure SupaPreflight has permission to read and list the migrations directory.',
         filePath: displayPath,
       });
     }
@@ -166,7 +166,7 @@ export async function analyzeConfig(
         rationale: `The migration file "${readErr.filename}" could not be read (${readErr.error}). Security analysis of this migration was incomplete because its SQL statements could not be evaluated.`,
         policyAssumption:
           'All SQL migration files must be accessible and readable so security preflights can accurately evaluate database state.',
-        remediation: 'Verify file permissions and ensure that SupaGuard has read access to all migration files.',
+        remediation: 'Verify file permissions and ensure that SupaPreflight has read access to all migration files.',
         filePath: readErr.relativePath || readErr.filename,
       });
     }
@@ -188,7 +188,7 @@ export async function analyzeConfig(
             policyAssumption:
               'Migration files must contain valid PostgreSQL syntax so security preflights can accurately evaluate database state.',
             remediation:
-              'Inspect and fix the SQL syntax error in the migration file so that SupaGuard can perform a complete security preflight.',
+              'Inspect and fix the SQL syntax error in the migration file so that SupaPreflight can perform a complete security preflight.',
             filePath: err.file,
             line: err.line,
           });

@@ -17,43 +17,43 @@ describe('CLI End-to-End Test Suite', () => {
 
   it('runs against normal_secure fixture and exits with code 0', async () => {
     const configPath = path.join(fixturesDir, 'normal_secure', 'supabase', 'config.toml');
-    const exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath]);
+    const exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath]);
     expect(exitCode).toBe(ExitCode.SUCCESS);
   });
 
   it('runs against weakened_security fixture and exits with code 1', async () => {
     const configPath = path.join(fixturesDir, 'weakened_security', 'supabase', 'config.toml');
-    const exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath]);
+    const exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath]);
     expect(exitCode).toBe(ExitCode.SECURITY_FINDINGS);
   });
 
   it('runs against missing_optional fixture and exits with code 0', async () => {
     const configPath = path.join(fixturesDir, 'missing_optional', 'supabase', 'config.toml');
-    const exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath]);
+    const exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath]);
     expect(exitCode).toBe(ExitCode.SUCCESS);
   });
 
   it('returns code 2 for a non-existent configuration file', async () => {
     const nonExistentPath = path.join(fixturesDir, 'ghost_dir', 'supabase', 'config.toml');
-    const exitCode = await runCli(['node', 'supaguard', 'check', '--config', nonExistentPath]);
+    const exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', nonExistentPath]);
     expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
   });
 
   it('returns code 2 for invalid malformed TOML syntax', async () => {
     const invalidPath = path.join(fixturesDir, 'invalid_toml', 'supabase', 'config.toml');
-    const exitCode = await runCli(['node', 'supaguard', 'check', '--config', invalidPath]);
+    const exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', invalidPath]);
     expect(exitCode).toBe(ExitCode.CONFIG_ERROR);
   });
 
   it('runs against unknown_fields fixture without crashing', async () => {
     const unknownPath = path.join(fixturesDir, 'unknown_fields', 'supabase', 'config.toml');
-    const exitCode = await runCli(['node', 'supaguard', 'check', '--config', unknownPath]);
+    const exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', unknownPath]);
     expect(exitCode).toBe(ExitCode.SUCCESS);
   });
 
   it('runs against env_vars fixture and does not flag env() references as secrets', async () => {
     const envVarsPath = path.join(fixturesDir, 'env_vars', 'supabase', 'config.toml');
-    const exitCode = await runCli(['node', 'supaguard', 'check', '--config', envVarsPath]);
+    const exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', envVarsPath]);
     expect(exitCode).toBe(ExitCode.SUCCESS);
   });
 
@@ -69,7 +69,7 @@ describe('CLI End-to-End Test Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', secretsPath, '--format', 'json']);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', secretsPath, '--format', 'json']);
     } finally {
       process.stdout.write = originalWrite;
     }
@@ -101,7 +101,7 @@ describe('CLI End-to-End Test Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--format', 'json']);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath, '--format', 'json']);
     } finally {
       process.stdout.write = originalWrite;
     }
@@ -120,7 +120,7 @@ describe('CLI End-to-End Test Suite', () => {
     const normalPath = path.join(fixturesDir, 'normal_secure', 'supabase', 'config.toml');
     const normalStrictCode = await runCli([
       'node',
-      'supaguard',
+      'supa-preflight',
       'check',
       '--config',
       normalPath,
@@ -132,7 +132,7 @@ describe('CLI End-to-End Test Suite', () => {
     const conflictingPath = path.join(fixturesDir, 'conflicting_auth', 'supabase', 'config.toml');
     const strictCode = await runCli([
       'node',
-      'supaguard',
+      'supa-preflight',
       'check',
       '--config',
       conflictingPath,
@@ -145,7 +145,7 @@ describe('CLI End-to-End Test Suite', () => {
     const testFile = path.join(fixturesDir, 'weakened_security', 'supabase', 'config.toml');
     const hashBefore = computeFileHash(testFile);
 
-    await runCli(['node', 'supaguard', 'check', '--config', testFile]);
+    await runCli(['node', 'supa-preflight', 'check', '--config', testFile]);
 
     const hashAfter = computeFileHash(testFile);
     expect(hashAfter).toBe(hashBefore);
@@ -163,7 +163,7 @@ describe('CLI End-to-End Test Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', invalidSecretPath, '--format', 'json']);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', invalidSecretPath, '--format', 'json']);
     } finally {
       process.stdout.write = originalWrite;
     }
@@ -192,7 +192,7 @@ describe('CLI End-to-End Test Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', invalidSecretPath]);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', invalidSecretPath]);
     } finally {
       process.stderr.write = originalWrite;
     }
@@ -216,7 +216,7 @@ describe('CLI End-to-End Test Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--advisory']);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath, '--advisory']);
     } finally {
       process.stdout.write = originalWrite;
     }
@@ -241,7 +241,7 @@ describe('CLI End-to-End Test Suite', () => {
     try {
       exitCode = await runCli([
         'node',
-        'supaguard',
+        'supa-preflight',
         'check',
         '--config',
         configPath,
@@ -266,7 +266,7 @@ describe('CLI End-to-End Test Suite', () => {
     const nonExistentPath = path.join(fixturesDir, 'ghost_dir', 'supabase', 'config.toml');
     const exitCode = await runCli([
       'node',
-      'supaguard',
+      'supa-preflight',
       'check',
       '--config',
       nonExistentPath,
@@ -279,7 +279,7 @@ describe('CLI End-to-End Test Suite', () => {
     const invalidPath = path.join(fixturesDir, 'invalid_toml', 'supabase', 'config.toml');
     const exitCode = await runCli([
       'node',
-      'supaguard',
+      'supa-preflight',
       'check',
       '--config',
       invalidPath,
@@ -302,7 +302,7 @@ describe('CLI End-to-End Test Suite', () => {
     try {
       exitCode = await runCli([
         'node',
-        'supaguard',
+        'supa-preflight',
         'check',
         '--config',
         configPath,
@@ -332,7 +332,7 @@ describe('CLI End-to-End Test Suite', () => {
     try {
       exitCode = await runCli([
         'node',
-        'supaguard',
+        'supa-preflight',
         'check',
         '--config',
         configPath,

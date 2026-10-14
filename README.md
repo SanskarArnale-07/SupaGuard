@@ -1,22 +1,22 @@
-# SupaGuard
+# SupaPreflight
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18.0.0-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-121%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-237%20passed-brightgreen.svg)]()
 
-> **SupaGuard** is a local security preflight CLI for Supabase projects.
+> **SupaPreflight** is an offline security preflight CLI for Supabase projects.
 > It inspects `supabase/config.toml` and SQL migration files (`supabase/migrations/*.sql`) prior to deployment to detect security-sensitive configurations, missing Row Level Security (RLS), exposed secrets, and overly permissive database access policies.
 
 ---
 
-## What SupaGuard Does
+## What SupaPreflight Does
 
 - **Static Configuration Analysis**: Parses `supabase/config.toml` using a strict, spec-compliant TOML 1.0 parser (`smol-toml`).
 - **SQL Migration Security Scanning**: Discovers and evaluates `supabase/migrations/*.sql` in deterministic order, building the cumulative final database state across your migration history.
 - **Spec-Compliant PostgreSQL Parsing**: Uses the official PostgreSQL parser compiled to WebAssembly (`pgsql-parser`) to parse complex DDL statements, comments, quoted identifiers, and multi-statement files.
-- **15 Built-in Security Rules**:
-  - 13 configuration security rules across Auth, Database, API exposure, Edge Functions, Storage buckets, and Secrets.
-  - 2 database migration rules tracking missing Row Level Security and dangerous or unrestricted RLS policies.
+- **Built-in Security Rules**:
+  - Configuration security rules across Auth, Database, API exposure, Edge Functions, Storage buckets, and Secrets.
+  - Database migration rules tracking missing Row Level Security, dangerous or unrestricted RLS policies, and PostgreSQL view security.
 - **State-Aware History Tracking**: Correctly accounts for tables created, altered, or dropped in later migrations, as well as policies modified or removed across the migration history.
 - **API Schema Correlation**: Cross-references table definitions against PostgREST API-exposed schemas (`api.schemas`) so internal or unexposed schemas do not generate false positives.
 - **Comprehensive Secret Redaction**: Masks sensitive credentials (`[REDACTED_SECRET]`) in terminal output, JSON reports, runtime error messages, and syntax error snippets.
@@ -26,13 +26,13 @@
 
 ---
 
-## What SupaGuard Does Not Do
+## What SupaPreflight Does Not Do
 
-- **Does NOT Execute SQL Against a Database**: SupaGuard is strictly a static analyzer. It never connects to local or remote PostgreSQL instances, never executes migrations, and does not require database credentials.
-- **Does NOT Connect to Live Supabase Projects**: SupaGuard is local-only. It does not contact remote Supabase APIs, project management endpoints, or cloud dashboards.
-- **Does NOT Validate Secret Values**: SupaGuard verifies that secrets use `env(...)` references rather than committed plaintext. It deliberately does not inspect local `.env` files or test whether credentials are valid.
+- **Does NOT Execute SQL Against a Database**: SupaPreflight is strictly a static analyzer. It never connects to local or remote PostgreSQL instances, never executes migrations, and does not require database credentials.
+- **Does NOT Connect to Live Supabase Projects**: SupaPreflight is local-only. It does not contact remote Supabase APIs, project management endpoints, or cloud dashboards.
+- **Does NOT Validate Secret Values**: SupaPreflight verifies that secrets use `env(...)` references rather than committed plaintext. It deliberately does not inspect local `.env` files or test whether credentials are valid.
 - **Does NOT Guarantee Flawless Business Logic**: Enabling Row Level Security ensures that row-level checks are enforced; it does not replace application integration testing or verify whether your specific business rules match user expectations.
-- **Does NOT Modify Files**: SupaGuard does not auto-fix or rewrite configuration or SQL files.
+- **Does NOT Modify Files**: SupaPreflight does not auto-fix or rewrite configuration or SQL files.
 
 ---
 
@@ -42,7 +42,7 @@
 - **Node.js**: `>= 18.0.0`
 
 ### Runtime Dependencies
-SupaGuard relies on five production dependencies:
+SupaPreflight relies on five production dependencies:
 - [`commander`](https://www.npmjs.com/package/commander) (`^12.1.0`) — CLI option parsing, help formatting, and subcommand routing.
 - [`pgsql-parser`](https://www.npmjs.com/package/pgsql-parser) (`^18.2.10`) — PostgreSQL 18 query and DDL parser compiled to WebAssembly for AST analysis of migrations.
 - [`smol-toml`](https://www.npmjs.com/package/smol-toml) (`^1.3.1`) — Spec-compliant TOML 1.0 parser with line and column tracking.
@@ -63,8 +63,8 @@ SupaGuard relies on five production dependencies:
 
 ```bash
 # Clone the repository
-git clone https://github.com/SanskarArnale-07/SupaGuard.git
-cd SupaGuard
+git clone https://github.com/SanskarArnale-07/SupaPreflight.git
+cd SupaPreflight
 
 # Install exact dependencies from lockfile
 npm ci
@@ -72,7 +72,7 @@ npm ci
 # Build the TypeScript project
 npm run build
 
-# Run the complete test suite (121 tests across 7 suites)
+# Run the complete test suite
 npm test
 
 # Verify package distribution tarball
@@ -81,21 +81,33 @@ npm pack --dry-run
 
 ### Installation in a Supabase Project
 
+Install the package as a development dependency:
+
 ```bash
 # Install as a dev dependency
-npm install --save-dev supaguard
+npm install --save-dev supa-preflight
 
 # Run preflight check
-npx supaguard check
+npx supa-preflight check
+```
+
+Or execute on-demand without local installation:
+
+```bash
+# Run latest release on-demand
+npx --yes supa-preflight check
+
+# Or pin to a specific release version
+npx --yes supa-preflight@0.1.0 check
 ```
 
 ### Global Installation
 
 ```bash
-npm install -g supaguard
+npm install -g supa-preflight
 
 # Run from your Supabase project root
-supaguard check
+supa-preflight check
 ```
 
 ---
@@ -105,7 +117,7 @@ supaguard check
 ### Commands and Options
 
 ```bash
-supaguard check [options]
+supa-preflight check [options]
 ```
 
 | Option | Flag | Default | Description |
@@ -116,38 +128,38 @@ supaguard check [options]
 | `--strict` | `-s` | `false` | Strict mode: exits with code `1` on any finding (including `MEDIUM`, `LOW`, and `INFO`; mutually exclusive with `--advisory`). |
 | `--advisory` | `-a` | `false` | Advisory mode: reports security findings without failing the process (exits `0` on findings, non-zero on execution or configuration errors; mutually exclusive with `--strict`). |
 | `--help` | `-h` | — | Display command help and available options. |
-| `--version` | `-V` | — | Output SupaGuard version number. |
+| `--version` | `-V` | — | Output SupaPreflight version number. |
 
 ### Usage Examples
 
 #### 1. Standard Preflight Check
 Run from your project root (automatically locates `./supabase/config.toml` and `./supabase/migrations/*.sql`):
 ```bash
-supaguard check
+supa-preflight check
 ```
 
 #### 2. Custom Paths
 Specify a direct config path or an explicit migrations folder:
 ```bash
-supaguard check --config ./custom/supabase/config.toml --migrations ./custom/supabase/migrations
+supa-preflight check --config ./custom/supabase/config.toml --migrations ./custom/supabase/migrations
 ```
 
 #### 3. Machine-Readable JSON Output
 Ideal for CI/CD pipelines, pre-commit hooks, and integration with security dashboards:
 ```bash
-supaguard check --format json
+supa-preflight check --format json
 ```
 
 #### 4. Strict Mode
 Fails on any finding, including non-blocking advisories:
 ```bash
-supaguard check --strict
+supa-preflight check --strict
 ```
 
 #### 5. Advisory Mode (CI / Pull Requests)
 Reports all security findings in logs without failing the job, while preserving non-zero exits on execution or configuration errors:
 ```bash
-supaguard check --advisory
+supa-preflight check --advisory
 ```
 For complete GitHub Actions workflow configurations, see [GitHub Actions Integration](docs/github-actions.md).
 
@@ -155,7 +167,7 @@ For complete GitHub Actions workflow configurations, see [GitHub Actions Integra
 
 ## Exit Codes
 
-SupaGuard uses deterministic exit codes to integrate cleanly with automated workflows:
+SupaPreflight uses deterministic exit codes to integrate cleanly with automated workflows:
 
 | Exit Code | Constant | Meaning | Condition |
 | :---: | :--- | :--- | :--- |
@@ -167,7 +179,7 @@ SupaGuard uses deterministic exit codes to integrate cleanly with automated work
 
 ## Security Rules & Severity Classification
 
-SupaGuard evaluates 15 security checks divided between configuration preflights and SQL migration analysis:
+SupaPreflight evaluates 16 security checks divided between configuration preflights and SQL migration analysis:
 
 ### Configuration Rules (Phase 1)
 
@@ -193,6 +205,7 @@ SupaGuard evaluates 15 security checks divided between configuration preflights 
 | :--- | :--- | :---: | :---: | :--- |
 | **`SEC-MIG-RLS-001`** | Table in API-Exposed Schema Lacks Row Level Security | `HIGH` | `migrations` | `CREATE TABLE` without `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` in final state. |
 | **`SEC-MIG-RLS-002`** | Suspicious or Overly Permissive Row Level Security Policy | `HIGH` / `MEDIUM` / `INFO` | `migrations` | `CREATE POLICY` / `ALTER POLICY` with unconditionally true predicates (`USING (true)`, `WITH CHECK (true)`). |
+| **`SEC-MIG-VIEW-001`** | PostgreSQL View Security Analysis | `HIGH` / `INFO` | `migrations` | `CREATE VIEW` without `security_invoker = true` referencing base tables or untracked relations. |
 
 ---
 
@@ -224,7 +237,7 @@ SupaGuard evaluates 15 security checks divided between configuration preflights 
 
 ### `SEC-MIG-RLS-002`: Suspicious or Overly Permissive RLS Policies
 
-SupaGuard inspects policy commands (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `ALL`), target roles (`anon`, `authenticated`, `public`), and conditional clauses (`USING`, `WITH CHECK`).
+SupaPreflight inspects policy commands (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `ALL`), target roles (`anon`, `authenticated`, `public`), and conditional clauses (`USING`, `WITH CHECK`).
 
 - **Classification Tiers**:
   1. **Unrestricted Write Access for `anon` or `public` (`HIGH`)**:
@@ -249,14 +262,14 @@ SupaGuard inspects policy commands (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `ALL
      - Advisory for `INSERT` with `WITH CHECK (true)` for authenticated users. Useful to prompt verifying that `user_id` fields cannot be spoofed.
   4. **Public Read-Only Access (`INFO`)**:
      - Affects `FOR SELECT` with `USING (true)`.
-     - Intentionally public read access is standard for public assets (catalogs, blogs, documentation). SupaGuard reports this as an informative advisory to confirm that the table does not store private user records.
+     - Intentionally public read access is standard for public assets (catalogs, blogs, documentation). SupaPreflight reports this as an informative advisory to confirm that the table does not store private user records.
 
 ---
 
 ### Known SQL Parsing Limitations
 
-1. **Procedural Logic Inside Functions**: SupaGuard statically parses DDL statements. Dynamic SQL executed inside PL/pgSQL functions (`EXECUTE '...'`) is not evaluated.
-2. **Unsupported Custom Grammar**: SupaGuard relies on the official PostgreSQL 18 grammar engine. Non-standard syntax or proprietary third-party preprocessor directives will produce a `SEC-MIG-PARSE-ERR` diagnostic finding without crashing the scan.
+1. **Procedural Logic Inside Functions**: SupaPreflight statically parses DDL statements. Dynamic SQL executed inside PL/pgSQL functions (`EXECUTE '...'`) is not evaluated.
+2. **Unsupported Custom Grammar**: SupaPreflight relies on the official PostgreSQL 18 grammar engine. Non-standard syntax or proprietary third-party preprocessor directives will produce a `SEC-MIG-PARSE-ERR` diagnostic finding without crashing the scan.
 3. **External Schema Objects**: Objects created dynamically by external extensions without explicit SQL DDL are outside static migration scope.
 
 ---
@@ -267,7 +280,7 @@ SupaGuard inspects policy commands (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `ALL
 
 ```
 ======================================================================
- SupaGuard — Supabase Security Preflight Analyzer
+ SupaPreflight — Supabase Security Preflight Analyzer
 ======================================================================
 Target File: ./supabase/config.toml
 Timestamp:   2026-10-12T15:50:00.000Z

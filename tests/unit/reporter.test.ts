@@ -47,7 +47,7 @@ describe('Report Formatters', () => {
 
   it('formats text report with clear findings and summary banner', () => {
     const text = formatTextReport(sampleResult);
-    expect(text).toContain('SupaGuard — Supabase Security Preflight Analyzer');
+    expect(text).toContain('SupaPreflight — Supabase Security Preflight Analyzer');
     expect(text).toContain('SEC-SEC-001');
     expect(text).toContain('CRITICAL');
     expect(text).toContain('SEC-AUTH-001');

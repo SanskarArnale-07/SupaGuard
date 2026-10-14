@@ -1,12 +1,38 @@
 {
-  "name": "supaguard-cli",
+  "name": "supa-preflight",
   "version": "0.1.0",
-  "description": "Open-source security preflight CLI for Supabase projects",
+  "description": "Offline Supabase security preflight for configuration and SQL migrations",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SanskarArnale-07/SupaPreflight.git"
+  },
+  "homepage": "https://github.com/SanskarArnale-07/SupaPreflight#readme",
+  "bugs": {
+    "url": "https://github.com/SanskarArnale-07/SupaPreflight/issues"
+  },
+  "keywords": [
+    "supabase",
+    "security",
+    "cli",
+    "preflight",
+    "rls",
+    "postgres",
+    "postgresql",
+    "audit",
+    "linter"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "supaguard": "dist/cli/index.js"
+    "supa-preflight": "dist/cli/index.js"
   },
   "files": [
     "dist"

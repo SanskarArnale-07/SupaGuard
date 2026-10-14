@@ -1,5 +1,5 @@
 /**
- * Severity levels for SupaGuard findings.
+ * Severity levels for SupaPreflight findings.
  */
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 

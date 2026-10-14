@@ -27,7 +27,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath]);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath]);
     } finally {
       process.stdout.write = origWrite;
     }
@@ -43,7 +43,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
     const configPath = path.join(fixturesDir, 'secure_with_migrations', 'supabase', 'config.toml');
     const exitCode = await runCli([
       'node',
-      'supaguard',
+      'supa-preflight',
       'check',
       '--config',
       configPath,
@@ -64,7 +64,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath]);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath]);
     } finally {
       process.stdout.write = origWrite;
     }
@@ -96,7 +96,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--format', 'json']);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath, '--format', 'json']);
     } finally {
       process.stdout.write = origWrite;
     }
@@ -137,7 +137,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath]);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath]);
     } finally {
       process.stdout.write = origStdout;
       process.stderr.write = origStderr;
@@ -165,7 +165,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
     try {
       exitCode = await runCli([
         'node',
-        'supaguard',
+        'supa-preflight',
         'check',
         '--config',
         configPath,
@@ -193,7 +193,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
     try {
       exitCode = await runCli([
         'node',
-        'supaguard',
+        'supa-preflight',
         'check',
         '--config',
         configPath,
@@ -221,7 +221,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
     try {
       exitCode = await runCli([
         'node',
-        'supaguard',
+        'supa-preflight',
         'check',
         '--config',
         configPath,
@@ -252,7 +252,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
     }
 
     const configPath = path.join(fixturesDir, 'insecure_migrations', 'supabase', 'config.toml');
-    await runCli(['node', 'supaguard', 'check', '--config', configPath]);
+    await runCli(['node', 'supa-preflight', 'check', '--config', configPath]);
 
     for (const f of files) {
       const fullPath = path.join(migrationsDir, f);
@@ -273,7 +273,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--advisory']);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath, '--advisory']);
     } finally {
       process.stdout.write = origWrite;
     }
@@ -296,7 +296,7 @@ describe('SQL Migration End-to-End CLI Suite', () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(['node', 'supaguard', 'check', '--config', configPath, '--advisory']);
+      exitCode = await runCli(['node', 'supa-preflight', 'check', '--config', configPath, '--advisory']);
     } finally {
       process.stdout.write = origStdout;
     }
