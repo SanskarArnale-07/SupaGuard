@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import type { ReportFormat } from '../types/report.js';
+import { getPackageVersion } from './version.js';
 
 export interface CliOptions {
   config?: string;
@@ -15,7 +16,7 @@ export function createCliCommand(onCheck?: (options: CliOptions) => void | Promi
   program
     .name('supa-preflight')
     .description('SupaPreflight — Security preflight CLI for Supabase projects')
-    .version('0.1.0')
+    .version(getPackageVersion())
     .exitOverride();
 
   const checkCommand = program

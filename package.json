@@ -1,6 +1,6 @@
 {
   "name": "supa-preflight",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Offline Supabase security preflight for configuration and SQL migrations",
   "license": "MIT",
   "repository": {

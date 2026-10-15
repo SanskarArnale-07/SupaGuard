@@ -352,4 +352,50 @@ describe('CLI End-to-End Test Suite', () => {
     expect(parsed.error.message).toContain('Cannot combine --advisory and --strict');
     expect(parsed.exitCode).toBe(ExitCode.CONFIG_ERROR);
   });
+
+  it('reports the exact package.json version via --version flag and exits with code 0', async () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8')
+    ) as { version: string };
+
+    let capturedStdout = '';
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedStdout += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(['node', 'supa-preflight', '--version']);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(exitCode).toBe(ExitCode.SUCCESS);
+    expect(capturedStdout.trim()).toBe(pkg.version);
+  });
+
+  it('reports the exact package.json version via -V flag and exits with code 0', async () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8')
+    ) as { version: string };
+
+    let capturedStdout = '';
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      capturedStdout += String(chunk);
+      return true;
+    };
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(['node', 'supa-preflight', '-V']);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(exitCode).toBe(ExitCode.SUCCESS);
+    expect(capturedStdout.trim()).toBe(pkg.version);
+  });
 });
